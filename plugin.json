@@ -1,0 +1,19 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "git-worktree",
+  "version": "0.1.0",
+  "description": "Visualize local Git worktrees and commit history with guarded history operations.",
+  "author": { "name": "Local developer" },
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Git Worktree Graph",
+        "shortDescription": "Browse worktrees and commit graphs.",
+        "longDescription": "Inspect local worktrees and commit DAGs, and preview rebase or cherry-pick before applying them.",
+        "developerName": "Local developer",
+        "category": "Developer Tools",
+        "capabilities": ["Interactive", "Write"]
+      }
+    }
+  }
+}
