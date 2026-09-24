@@ -8,8 +8,10 @@
  * The view follows the shape of a desktop Git client: a toolbar, a column header,
  * an "Uncommitted Changes" row that behaves like a commit, a multi-lane DAG whose
  * lanes persist across "load more" pages, and an expanded commit that splits into
- * its own metadata beside a file tree. Layout is driven by the panel's measured
- * width, because this panel is a resizable column, a split pane or a float.
+ * its own metadata beside a file tree, indented past its lane, which a rail
+ * carries through so the graph never breaks around it. Layout is driven by the
+ * panel's measured width, because this panel is a resizable column, a split pane
+ * or a float.
  *
  * Styling uses host theme tokens (`--dsw-alias-*`); only lane and diff-count
  * artwork use literal colors, which the host's token policy allows for artwork.
@@ -29,11 +31,27 @@ window.__ModuleLoader__.load({
     const COL = 14;
     const PAD = 10;
     const MARGIN = 8;
+    // Where a lane change crosses, measured from the top of the row below its
+    // node. Two slots, one clear of that row's node above and one below, so two
+    // parents of one commit cannot draw their crossings over each other.
+    const CROSS_NEAR = 7;
+    const CROSS_FAR = ROW - 7;
     // Width breakpoints, measured on the panel itself.
     const W_DATE = 560;
     const W_AUTHOR = 700;
     const W_COMMIT = 820;
     const W_DETAIL_SPLIT = 680;
+    // An expanded detail is capped as a share of the panel's own height, because
+    // this panel is a full-height column, a split pane or a short float: without
+    // a cap a long file list pushes every other commit out of view.
+    const DETAIL_MAX_SHARE = 0.45;
+    const DETAIL_MAX_CEILING = 420;
+    const DETAIL_MAX_FLOOR = ROW * 6;
+    // The panel's first read can arrive before the Host knows this Session — a
+    // restart restores the tab before it restores the Session — so it is retried
+    // with a growing pause before the failure is believed.
+    const RESOLVE_ATTEMPTS = 4;
+    const RESOLVE_BACKOFF_MS = 300;
 
     // Lane artwork. Literal colors are deliberate: these identify a branch, not
     // a UI surface, and each one is legible on both theme backgrounds.
@@ -41,8 +59,6 @@ window.__ModuleLoader__.load({
     const DIFF_ADD = '#3fa34d';
     const DIFF_DEL = '#d05a4e';
 
-    // Selected worktree per Session, so returning to the tab restores the view.
-    const selection = new Map();
     // Presentational choices per Session: scope, remote-ref visibility, graph column.
     const viewState = new Map();
 
@@ -58,11 +74,20 @@ window.__ModuleLoader__.load({
 .dsh-gw-icons { display: inline-flex; align-items: center; gap: 2px; }
 .dsh-gw-iconbtn { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border: 0; border-radius: 6px; background: none; color: var(--dsw-alias-label-secondary); cursor: pointer; }
 .dsh-gw-iconbtn:hover { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); }
-.dsh-gw-crumbs { display: flex; flex-wrap: wrap; gap: 4px; padding: 5px 8px 0; }
-.dsh-gw-wt { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; height: 20px; padding: 0 7px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 999px; background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-secondary); font: inherit; cursor: pointer; }
-.dsh-gw-wt-root { border-color: var(--dsw-alias-border-l2); color: var(--dsw-alias-label-primary); }
-.dsh-gw-wt-active { background: var(--dsw-alias-brand-primary); border-color: var(--dsw-alias-brand-primary); color: var(--dsw-alias-bg-base); }
+/* The worktree chip rides in the toolbar, so it has to give up width to the
+   controls beside it and ellipsise the path rather than push them around. Both
+   the chip and the text inside it need a zero minimum for that to happen, and
+   the chip clips its own overflow as a second line of defence: the path is the
+   one thing here that can be arbitrarily long, so a chip that could not shrink
+   would push its own status dot and the folder name out of the toolbar instead
+   of cutting the text. The dot stays outside that cut — it is drawn before the
+   text and never shrinks — so the state keeps its colour whatever the path is. */
+.dsh-gw-wt { display: inline-flex; align-items: center; gap: 4px; flex: 0 1 auto; min-width: 0; max-width: 100%; overflow: hidden; height: 20px; padding: 0 7px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 999px; background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-secondary); font: inherit; }
+.dsh-gw-wt .dsh-gw-subjtext { min-width: 0; overflow: hidden; }
+.dsh-gw-wt-current { background: var(--dsw-alias-brand-primary); border-color: var(--dsw-alias-brand-primary); color: var(--dsw-alias-bg-base); }
 .dsh-gw-dot { flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: var(--dsw-alias-state-warn-primary); }
+.dsh-gw-dot-clean { background: var(--dsw-alias-state-success-primary); }
+.dsh-gw-dot-unknown { background: var(--dsw-alias-state-error-primary); }
 .dsh-gw-msg { padding: 5px 10px; color: var(--dsw-alias-label-secondary); border-bottom: 1px solid var(--dsw-alias-border-l1); }
 .dsh-gw-error { margin: 8px 10px; padding: 6px 8px; border: 1px solid var(--dsw-alias-state-error-primary); border-radius: 6px; color: var(--dsw-alias-state-error-primary); white-space: pre-wrap; word-break: break-word; }
 .dsh-gw-empty { padding: 16px 10px; color: var(--dsw-alias-label-secondary); text-align: center; }
@@ -71,39 +96,93 @@ window.__ModuleLoader__.load({
 .dsh-gw-grid { display: flex; flex-direction: column; min-width: 100%; }
 .dsh-gw-hrow { position: sticky; top: 0; z-index: 2; display: grid; grid-template-columns: var(--dsh-gw-cols); align-items: center; height: 26px; background: var(--dsw-alias-bg-layer-1); border-bottom: 1px solid var(--dsw-alias-border-l1); color: var(--dsw-alias-label-secondary); font-weight: 600; }
 .dsh-gw-hcell { padding: 0 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dsh-gw-row { display: grid; grid-template-columns: var(--dsh-gw-cols); align-items: center; min-height: 26px; border-bottom: 1px solid var(--dsw-specific-sidebar-fill); border-left: 2px solid transparent; cursor: pointer; outline: none; }
-.dsh-gw-row:hover { background: var(--dsw-alias-bg-layer-1); }
-.dsh-gw-row:focus-visible { box-shadow: inset 0 0 0 1px var(--dsw-alias-brand-primary); }
-.dsh-gw-row-open { background: var(--dsw-alias-bg-layer-1); border-left-color: var(--dsw-alias-brand-primary); }
+/* The lane is drawn as one ROW-tall slice per row, so a row's pitch has to be
+   exactly ROW and every slice has to begin at its row's top. A bottom border
+   and an inline SVG's baseline gap each add height the drawing knows nothing
+   about, and that is what left the lane visibly broken between rows. The
+   separator is an inset shadow so it costs no layout. */
+.dsh-gw-row { display: grid; grid-template-columns: var(--dsh-gw-cols); align-items: center; height: 26px; overflow: hidden; border-left: 2px solid transparent; box-shadow: inset 0 -1px 0 var(--dsw-specific-sidebar-fill); cursor: pointer; outline: none; }
+/* The layer token is the same white the panel already sits on in the light
+   theme, so an open row was marked by its left stripe alone and hovering one
+   showed nothing at all. Mixing the label colour into the layer tints darker on
+   the light theme and lighter on the dark one — the two directions "selected"
+   reads as — and stays on theme tokens instead of a fixed grey. */
+.dsh-gw-row:hover:not(.dsh-gw-row-open) { background: color-mix(in srgb, var(--dsw-alias-label-primary) 3%, var(--dsw-alias-bg-layer-1)); }
+.dsh-gw-row:focus-visible { box-shadow: inset 0 0 0 1px var(--dsw-alias-brand-primary), inset 0 -1px 0 var(--dsw-specific-sidebar-fill); }
+.dsh-gw-row-open { background: color-mix(in srgb, var(--dsw-alias-label-primary) 6%, var(--dsw-alias-bg-layer-1)); border-left-color: var(--dsw-alias-brand-primary); }
 .dsh-gw-cell { display: flex; align-items: center; min-width: 0; padding: 0 8px; }
 .dsh-gw-cell-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--dsw-alias-label-secondary); }
 .dsh-gw-cell-sec { color: var(--dsw-alias-label-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.dsh-gw-gcell { overflow: hidden; }
+.dsh-gw-gcell { display: flex; align-self: stretch; overflow: hidden; }
+.dsh-gw-gcell svg { display: block; flex: 0 0 auto; }
 .dsh-gw-subj { display: flex; align-items: center; gap: 6px; min-width: 0; width: 100%; }
 .dsh-gw-subjtext { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dsh-gw-ref { flex: 0 0 auto; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 5px; border-radius: 4px; font-size: 11px; line-height: 16px; border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-secondary); }
-.dsh-gw-ref-branch, .dsh-gw-ref-remote { display: inline-flex; align-items: center; gap: 4px; padding: 0 5px 0 0; border-color: color-mix(in srgb, var(--dsh-gw-ref-color) 42%, var(--dsw-alias-border-l2)); background: color-mix(in srgb, var(--dsh-gw-ref-color) 8%, var(--dsw-alias-bg-layer-2)); color: var(--dsw-alias-label-primary); }
-.dsh-gw-ref-remote { border-style: dashed; color: var(--dsw-alias-label-secondary); }
+/* A branch chip is the lane's own: tile, border, tint and now the name all come
+   from the lane colour, so one branch reads as one colour rather than as green
+   chrome around black text. */
+.dsh-gw-ref-branch, .dsh-gw-ref-remote { display: inline-flex; align-items: center; gap: 4px; padding: 0 5px 0 0; border-color: color-mix(in srgb, var(--dsh-gw-ref-color) 42%, var(--dsw-alias-border-l2)); background: color-mix(in srgb, var(--dsh-gw-ref-color) 8%, var(--dsw-alias-bg-layer-2)); color: var(--dsh-gw-ref-color); }
+.dsh-gw-ref-remote { border-style: dashed; }
 .dsh-gw-ref-icon { display: inline-flex; align-items: center; justify-content: center; align-self: stretch; width: 18px; min-width: 18px; min-height: 16px; border-radius: 3px 0 0 3px; background: var(--dsh-gw-ref-color); color: white; }
 .dsh-gw-ref-icon svg { display: block; }
 .dsh-gw-ref-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .dsh-gw-ref-remote-name { color: var(--dsw-alias-label-secondary); font-style: italic; }
 .dsh-gw-ref-current { border-color: color-mix(in srgb, var(--dsh-gw-ref-color) 68%, var(--dsw-alias-border-l2)); font-weight: 600; }
 .dsh-gw-ref-tag { color: var(--dsw-alias-state-success-primary); }
-.dsh-gw-ref-stash, .dsh-gw-ref-worktree { color: var(--dsw-alias-state-warn-primary); }
+.dsh-gw-ref-stash { color: var(--dsw-alias-state-warn-primary); }
+/* The worktree chip is one chip built from two cells: the inverted label (solid
+   label color — black in light mode, white in dark — with the text knocked out),
+   then the branch it holds drawn as a branch chip is. The frame belongs to the
+   chip, not to either cell, so the label colour rings the whole pair while the
+   branch name sits on its own lane-tinted surface rather than on the label's
+   black. No gap between the cells, and the frame clips them to its own corners. */
+.dsh-gw-ref-worktree { display: inline-flex; align-items: stretch; gap: 0; padding: 0; border: 1px solid var(--dsw-alias-label-primary); border-radius: 5px; overflow: hidden; background: none; font-size: 11px; }
+.dsh-gw-ref-worktree-label { display: inline-flex; align-items: center; padding: 0 7px; background: var(--dsw-alias-label-primary); color: var(--dsw-alias-bg-base); font-size: 12px; font-weight: 600; line-height: 18px; }
+.dsh-gw-ref-worktree-held { display: inline-flex; align-items: center; gap: 4px; padding: 0 7px 0 0; background: color-mix(in srgb, var(--dsh-gw-ref-color) 8%, var(--dsw-alias-bg-layer-2)); color: var(--dsw-alias-label-primary); line-height: 18px; }
+.dsh-gw-ref-worktree-icon { display: inline-flex; align-items: center; justify-content: center; align-self: stretch; width: 18px; min-width: 18px; background: var(--dsh-gw-ref-color); color: white; }
+.dsh-gw-ref-worktree-icon svg { display: block; }
+.dsh-gw-ref-worktree-name { display: inline-flex; align-items: center; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dsh-gw-ref-worktree-remote { color: var(--dsw-alias-label-secondary); font-style: italic; }
 
 .dsh-gw-uncommitted { font-weight: 600; }
-.dsh-gw-detail { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); border-bottom: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-1); }
-.dsh-gw-detail-narrow { grid-template-columns: minmax(0, 1fr); }
-.dsh-gw-detail-left { padding: 8px 10px; min-width: 0; border-right: 1px solid var(--dsw-alias-border-l1); }
+.dsh-gw-row-head { font-weight: 600; }
+.dsh-gw-row-head .dsh-gw-ref { font-weight: 400; }
+/* An expanded row keeps the graph's own column. The detail is many rows tall,
+   so no row slice can draw it: a rail beside it carries every lane across the
+   band, and the detail's text starts under the Description column instead of
+   under the lane. The 2px border matches a row's own box, so the rail lines up
+   with the graph slices above and below it. The detail also carries a tint of
+   the same recipe as the row that opened it, one step weaker: in the light theme
+   the base and the layer surface are both white, so an expanded detail used to
+   be the same white as every closed row around it. */
+.dsh-gw-detailrow { display: flex; align-items: stretch; border-left: 2px solid transparent; border-bottom: 1px solid var(--dsw-alias-border-l1); background: color-mix(in srgb, var(--dsw-alias-label-primary) 4%, var(--dsw-alias-bg-layer-1)); }
+.dsh-gw-rail { position: relative; flex: 0 0 auto; align-self: stretch; overflow: hidden; }
+.dsh-gw-rail-line { position: absolute; top: 0; bottom: 0; border-radius: 1px; }
+.dsh-gw-rail-turn { position: absolute; display: block; overflow: visible; }
+.dsh-gw-detailbody { flex: 1 1 auto; min-width: 0; }
+/* The two halves of a detail are flex columns rather than grid columns, because a
+   grid row is sized from its item's content and ignores that item's max-height:
+   capping the changed-file column there grew the row to the file list's full
+   height and left the capped column floating in empty space. A flex line's cross
+   size does respect the item's cap, so the row ends where the shorter of the two
+   halves ends — the message keeps its height, the file list stops at its cap. */
+.dsh-gw-detail { display: flex; align-items: stretch; }
+.dsh-gw-detail-narrow { flex-direction: column; }
+.dsh-gw-detail-left { flex: 1 1 0; padding: 8px 10px; min-width: 0; border-right: 1px solid var(--dsw-alias-border-l1); }
 .dsh-gw-detail-narrow .dsh-gw-detail-left { border-right: 0; border-bottom: 1px solid var(--dsw-alias-border-l1); }
+.dsh-gw-detail-narrow .dsh-gw-detail-left, .dsh-gw-detail-narrow .dsh-gw-detail-right { flex: 0 0 auto; }
 .dsh-gw-kv { display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 2px 8px; }
 .dsh-gw-k { color: var(--dsw-alias-label-secondary); }
 .dsh-gw-v { min-width: 0; overflow-wrap: anywhere; }
 .dsh-gw-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .dsh-gw-body { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--dsw-alias-border-l1); white-space: pre-wrap; color: var(--dsw-alias-label-secondary); }
 .dsh-gw-legacy { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--dsw-alias-label-secondary); }
-.dsh-gw-detail-right { padding: 8px 10px; min-width: 0; overflow: auto; }
+/* Only the changed-file column is capped, and it scrolls on its own: the metadata
+   and the commit message beside it keep their natural height, so a long message
+   grows the block while a long file list scrolls inside its own box. The cap is
+   inherited from the row, which also carries the rail, so the lane the expanded
+   row sits on is drawn down the whole block however tall the left column gets. */
+.dsh-gw-detail-right { flex: 1 1 0; padding: 8px 10px; min-width: 0; max-height: var(--dsh-gw-detail-max); overflow: auto; }
 .dsh-gw-stat { color: var(--dsw-alias-label-secondary); margin-bottom: 6px; }
 .dsh-gw-add { color: ${DIFF_ADD}; }
 .dsh-gw-del { color: ${DIFF_DEL}; }
@@ -128,10 +207,56 @@ window.__ModuleLoader__.load({
       return payload.data;
     }
 
-    function basename(path) {
-      const trimmed = String(path || '').replace(/[\\/]+$/, '');
-      const cut = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));
-      return cut < 0 ? trimmed : trimmed.slice(cut + 1);
+    /**
+     * Compare two worktree paths for identity.
+     *
+     * The Host answers `repo.root` from `realpath` while `worktrees[].path` comes
+     * from `git worktree list`, and on Windows those disagree about separators —
+     * `E:\workspace\X` against `E:/workspace/X`. Exact equality therefore never
+     * matches, which silently left the panel reading whichever worktree happened
+     * to be listed first.
+     */
+    function samePath(left, right) {
+      const norm = (value) => String(value || '').replace(/[\\/]+/g, '/').replace(/\/+$/, '').toLowerCase();
+      const a = norm(left);
+      return a !== '' && a === norm(right);
+    }
+
+    // The shortest a path may be shortened by and still be worth showing short.
+    // Eliding a path to save one or two characters is not a shortening: it trades
+    // characters a reader can see for an ellipsis they must decode, which is how
+    // `E:/www.p6c/ThBIMWindowsUI` was drawn almost whole inside a chip.
+    const PATH_MIN_SAVING = 5;
+
+    /**
+     * Shorten a worktree path for the toolbar.
+     *
+     * The part of a path that identifies it is the folder it ends in, and the
+     * part that distinguishes two similar checkouts is the parent folder it sits
+     * in. So the folder and the root's first four characters are always kept, and
+     * the parent folder is cut to whatever the width budget still allows — as
+     * little as one character, when that is all the budget there is. A path the
+     * rule cannot shorten by `PATH_MIN_SAVING` characters is left whole rather
+     * than traded for a barely-shorter string, and the chip ellipsises whatever
+     * still overflows its own width.
+     */
+    function compactPath(path) {
+      const text = String(path || '');
+      const cut = Math.max(text.lastIndexOf('/'), text.lastIndexOf('\\'));
+      if (cut <= 0) return text;
+      const sep = text[cut];
+      const name = text.slice(cut + 1);
+      const parent = text.slice(0, cut);
+      const parentCut = Math.max(parent.lastIndexOf('/'), parent.lastIndexOf('\\'));
+      const segment = parentCut < 0 ? parent : parent.slice(parentCut + 1);
+      const head = text.slice(0, 4);
+      const attempt = (middle) => `${head}…${middle}${sep}${name}`;
+      // What is left for the parent name once the root, the ellipsis, the
+      // separator, the folder and the saving have taken their share.
+      const budget = text.length - PATH_MIN_SAVING - attempt('').length;
+      let compact = attempt('');
+      if (budget >= 1 && segment) compact = attempt(segment.slice(0, Math.min(segment.length, budget)));
+      return compact.length <= text.length - PATH_MIN_SAVING ? compact : text;
     }
 
     function shortOid(oid) {
@@ -167,22 +292,31 @@ window.__ModuleLoader__.load({
     /**
      * Lay commits out into lanes by walking newest → oldest.
      *
-     * A commit takes the lane its first child already reserved; a merge reserves
-     * one lane per parent. Lanes are never renumbered, so appending a page keeps
-     * every earlier row on the same lane and the drawing stays continuous.
+     * A commit takes the lane its first child already reserved, and a merge
+     * reserves one lane per parent. Lanes waiting for a commit that already
+     * arrived collapse before the next row is placed, so the branches still
+     * running slide left: an older commit sits as far left as its branch allows.
+     * A lane therefore bends wherever the branches around it come and go — which
+     * is the price of a compact graph, and the reason an edge's columns are read
+     * back from `lanes` after the walk rather than remembered when it was queued.
+     *
+     * The walk is still strictly newest → oldest, so appending a page cannot move
+     * a row that is already drawn.
      */
     function layoutLanes(nodes) {
       const waiting = [];
       const lanes = [];
       const edges = [];
+      const seats = [];
       for (let index = 0; index < nodes.length; index += 1) {
         const node = nodes[index];
-        let lane = waiting.indexOf(node.id);
-        if (lane < 0) {
-          lane = waiting.indexOf(null);
-          if (lane < 0) lane = waiting.length;
+        for (let slot = waiting.length - 1; slot >= 0; slot -= 1) {
+          if (waiting[slot] === null) waiting.splice(slot, 1);
         }
+        let lane = waiting.indexOf(node.id);
+        if (lane < 0) lane = waiting.length;
         lanes.push(lane);
+        // The first parent inherits this column, so a linear history stays straight.
         waiting[lane] = null;
         for (const parent of node.parents || []) {
           if (!parent) continue;
@@ -192,8 +326,16 @@ window.__ModuleLoader__.load({
             if (parentLane < 0) parentLane = waiting.length;
             waiting[parentLane] = parent;
           }
-          edges.push({ from: index, fromLane: lane, parent, toLane: parentLane });
+          edges.push({ from: index, parent });
         }
+        // Where every branch still running sits once this row is placed. An edge
+        // reads this to follow its parent's column as the branches around it
+        // collapse, instead of jumping the whole distance at once.
+        const seat = new Map();
+        for (let slot = 0; slot < waiting.length; slot += 1) {
+          if (waiting[slot]) seat.set(waiting[slot], slot);
+        }
+        seats.push(seat);
       }
       const indexById = new Map(nodes.map((node, index) => [node.id, index]));
       for (const edge of edges) {
@@ -201,10 +343,35 @@ window.__ModuleLoader__.load({
         // Parents inside the page connect to their real row, which is essential
         // for merge lines that pass one or more intervening commits.
         edge.to = indexById.has(edge.parent) ? indexById.get(edge.parent) : nodes.length;
+        // The columns this edge passes through: one entry per column its parent
+        // moves to while the edge runs, so every ramp spans a single column and
+        // never enters a column another branch is still running in.
+        edge.route = [];
+        for (let row = edge.from + 1; row < edge.to && row < lanes.length; row += 1) {
+          const seat = seats[row - 1] && seats[row - 1].get(edge.parent);
+          if (seat === undefined) continue;
+          const last = edge.route[edge.route.length - 1];
+          if (last && last.lane === seat) continue;
+          edge.route.push({ lane: seat, y: row * ROW + CROSS_NEAR });
+        }
+        // The column a lane runs in can change while the walk continues, so both
+        // ends of an edge are read from where its rows were finally drawn. The
+        // page's last row keeps the column the walk left the parent waiting in.
+        edge.fromLane = lanes[edge.from];
+        edge.toLane = edge.to < lanes.length ? lanes[edge.to] : edge.toLane;
       }
       let width = 0;
       for (const lane of lanes) width = Math.max(width, lane + 1);
       for (const edge of edges) width = Math.max(width, edge.fromLane + 1, edge.toLane + 1);
+      // Every lane change leaves its node and crosses in the row below it, taking
+      // the two slots that row has clear of its own node in turn. A merge's two
+      // crossings then sit on different lines instead of one drawn over the other.
+      const departures = new Map();
+      for (const edge of edges) {
+        const order = departures.get(edge.from) || 0;
+        departures.set(edge.from, order + 1);
+        edge.crossing = (edge.from + 1) * ROW + (order % 2 === 0 ? CROSS_NEAR : CROSS_FAR);
+      }
       return { lanes, edges, width: Math.max(width, 1) };
     }
 
@@ -226,79 +393,62 @@ window.__ModuleLoader__.load({
       return index * ROW + ROW / 2;
     }
 
-    /** The real root of a cubic's y(t) = target inside (0, 1), found by bisection. */
-    function cubicYAt(p0, p1, p2, p3, target) {
-      const at = (t) => {
-        const u = 1 - t;
-        return (u * u * u * p0) + (3 * u * u * t * p1) + (3 * u * t * t * p2) + (t * t * t * p3);
-      };
-      // y(0) = p0 and y(1) = p3; the handles keep y monotonic between them, so
-      // bisection converges whichever direction the curve runs.
-      const rising = p3 >= p0;
-      let low = 0;
-      let high = 1;
-      for (let step = 0; step < 40; step += 1) {
-        const mid = (low + high) / 2;
-        if ((at(mid) < target) === rising) low = mid;
-        else high = mid;
-      }
-      return (low + high) / 2;
+    /**
+     * One lane change, as the polyline it is drawn from: down the source column,
+     * a ramp per column the parent moves through, then down the parent's column.
+     *
+     * Each ramp is exactly one column wide, taken from `edge.route`, so a lane
+     * change never reaches across a column another branch is still running in —
+     * which is what keeps the lanes from crossing each other. The first ramp
+     * leaves the source column in one of the slots the row below has clear of its
+     * own node, and every later one descends, so a lane moving left is low on the
+     * left and high on the right.
+     */
+    function edgeRuns(edge, x1, y1, x2, y2) {
+      const points = [{ x: x1, y: y1 }, { x: x1, y: edge.crossing }];
+      for (const step of edge.route || []) points.push({ x: laneX(step.lane), y: step.y });
+      points.push({ x: x2, y: y2 });
+      return points;
+    }
+
+    /** The part of one segment that lies between two horizontal lines. */
+    function clipSegment(a, b, yTop, yBottom) {
+      const dy = b.y - a.y;
+      if (dy === 0) return a.y >= yTop && a.y <= yBottom ? [a, b] : null;
+      const enter = (yTop - a.y) / dy;
+      const leave = (yBottom - a.y) / dy;
+      const from = Math.max(0, Math.min(enter, leave));
+      const to = Math.min(1, Math.max(enter, leave));
+      if (to <= from) return null;
+      const at = (t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + dy * t });
+      return [at(from), at(to)];
     }
 
     /**
-     * Trim a monotonic curve to `yTop .. yBottom`, in absolute coordinates.
+     * One row's slice of an edge, as a path in that row's own coordinates.
      *
-     * Trimming with the same endpoints the curve was built from leaves the
-     * bezier's shape untouched, so the pieces each row draws line up instead of
-     * visibly kinking every 26 pixels.
+     * Clipping a straight polyline by y is exact, so a slice ends on the row edge
+     * at precisely the point its neighbour begins on and the lane stays one
+     * stroke. The ramps and both columns are one path, so their junctions are
+     * joined and rounded rather than drawn as separate, butted pieces.
      */
-    function clipCurve(x1, y1, x2, y2, yTop, yBottom) {
-      const rising = y2 >= y1;
-      const span = Math.abs(y2 - y1) || 1;
-      const dip = span * 0.55;
-      const c1 = y1 + (rising ? dip : -dip);
-      const c2 = y2 - (rising ? dip : -dip);
-      let startT = 0;
-      let endT = 1;
-      if (y1 < yTop) {
-        startT = cubicYAt(y1, c1, c2, y2, yTop);
+    function rowPath(points, yTop, yBottom) {
+      const kept = [];
+      for (let index = 0; index < points.length - 1; index += 1) {
+        const piece = clipSegment(points[index], points[index + 1], yTop, yBottom);
+        if (!piece) continue;
+        if (kept.length === 0) kept.push(piece[0]);
+        kept.push(piece[1]);
       }
-      if (y2 > yBottom) {
-        endT = cubicYAt(y1, c1, c2, y2, yBottom);
-      }
-      const xAt = (t) => {
-        const u = 1 - t;
-        return (u * u * u * x1) + (3 * u * u * t * x1) + (3 * u * t * t * x2) + (t * t * t * x2);
-      };
-      const yAt = (t) => {
-        const u = 1 - t;
-        return (u * u * u * y1) + (3 * u * u * t * c1) + (3 * u * t * t * c2) + (t * t * t * y2);
-      };
-      const xDerivative = (t) => {
-        const u = 1 - t;
-        return 6 * u * t * (x2 - x1);
-      };
-      const yDerivative = (t) => {
-        const u = 1 - t;
-        return (3 * u * u * (c1 - y1)) + (6 * u * t * (c2 - c1)) + (3 * t * t * (y2 - c2));
-      };
-      const spanT = endT - startT;
-      const startX = xAt(startT);
-      const startY = yAt(startT);
-      const endX = xAt(endT);
-      const endY = yAt(endT);
-      const control1X = startX + (spanT * xDerivative(startT)) / 3;
-      const control1Y = startY + (spanT * yDerivative(startT)) / 3;
-      const control2X = endX - (spanT * xDerivative(endT)) / 3;
-      const control2Y = endY - (spanT * yDerivative(endT)) / 3;
-      return {
-        d: `M ${startX} ${startY - yTop} C ${control1X} ${control1Y - yTop} ${control2X} ${control2Y - yTop} ${endX} ${endY - yTop}`,
-      };
+      if (kept.length < 2) return null;
+      return kept
+        .map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y - yTop}`)
+        .join(' ');
     }
 
     /** One row's slice of the graph, drawn in that row's own coordinates. */
     function GraphCell(props) {
-      const { layout, index, colors } = props;
+      const { layout, index, colors, head, above } = props;
       const children = [];
       const yTop = index * ROW;
       const yBottom = yTop + ROW;
@@ -310,42 +460,129 @@ window.__ModuleLoader__.load({
         const x2 = laneX(edge.toLane);
         const y1 = laneY(edge.from);
         const y2 = laneY(edge.to);
+        const stroke = colors.get(edge.fromLane);
         const width = strokeWidthFor(layout, edge.from, edge.fromLane);
-        if (x1 === x2) {
-          const start = Math.max(y1, yTop) - yTop;
-          const end = Math.min(y2, yBottom) - yTop;
-          children.push(h('line', {
-            key: `e${edge.from}:${edge.parent}:${index}`,
-            x1, y1: start, x2, y2: end,
-            stroke: colors.get(edge.fromLane), strokeWidth: width, strokeLinecap: 'round',
-          }));
-        } else {
-          const { d } = clipCurve(x1, y1, x2, y2, yTop, yBottom);
-          children.push(h('path', {
-            key: `e${edge.from}:${edge.parent}:${index}`,
-            d,
-            fill: 'none', stroke: colors.get(edge.fromLane), strokeWidth: width, strokeLinecap: 'round',
-          }));
-        }
+        const points = x1 === x2
+          ? [{ x: x1, y: y1 }, { x: x1, y: y2 }]
+          : edgeRuns(edge, x1, y1, x2, y2);
+        const d = rowPath(points, yTop, yBottom);
+        if (!d) continue;
+        children.push(h('path', {
+          key: `e${edge.from}:${edge.parent}:${index}`,
+          d,
+          fill: 'none', stroke, strokeWidth: width,
+          strokeLinecap: 'round', strokeLinejoin: 'round',
+        }));
       }
 
       const lane = layout.lanes[index];
       if (lane !== undefined) {
-        if (index === 0) {
+        // A dirty worktree puts the hollow marker on its own row, so this row
+        // carries only the half of the connector that reaches up to it.
+        if (above) {
           children.push(h('line', {
             key: 'working-tree-link',
             x1: laneX(lane), y1: 0, x2: laneX(lane), y2: ROW / 2,
             stroke: 'var(--dsw-alias-label-secondary)', strokeWidth: 1.6,
           }));
         }
+        // The hollow circle always marks the newest change: the working tree
+        // while it is dirty, otherwise this HEAD commit. An empty `fill` reveals
+        // the row background through the node.
         children.push(h('circle', {
-          key: 'node', cx: laneX(lane), cy: ROW / 2, r: 4,
-          fill: colors.get(lane), stroke: 'var(--dsw-alias-bg-base)', strokeWidth: 1.6,
+          key: 'node', cx: laneX(lane), cy: ROW / 2, r: head ? 4.5 : 4,
+          fill: head ? 'var(--dsw-alias-bg-base)' : colors.get(lane),
+          stroke: head ? colors.get(lane) : 'var(--dsw-alias-bg-base)',
+          strokeWidth: head ? 2 : 1.6,
         }));
       }
 
       return h('div', { className: 'dsh-gw-gcell', style: { height: ROW } },
         h('svg', { width: to, height: ROW, viewBox: `0 0 ${to} ${ROW}`, 'aria-hidden': true }, children));
+    }
+
+    /**
+     * One expanded row's slice of the graph, drawn beside the detail rather than
+     * inside it.
+     *
+     * A detail is many rows tall, so the band between the two rows it sits
+     * between holds no row slice at all: the row above ends its lane at the
+     * band's top, the row below starts again at its bottom, and the two dots
+     * read as unrelated. Every lane crossing that band is drawn here where it
+     * enters — the x the row above ends on, which is also the x the row below
+     * begins on — so a lane stays one stroke from the newest change down to the
+     * oldest commit on screen.
+     */
+    function GraphRail(props) {
+      const { layout, index, colors, worktree, width } = props;
+      const lines = [];
+      // The working tree's own connector crosses a band above the first commit
+      // row, in the muted colour its two row-local halves already use.
+      if (worktree) {
+        lines.push(h('span', {
+          key: 'working-tree-link',
+          className: 'dsh-gw-rail-line',
+          style: { left: `${laneX(0) - 0.8}px`, width: '1.6px', background: 'var(--dsw-alias-label-secondary)' },
+        }));
+      }
+      const bandTop = (index + 1) * ROW;
+      for (const edge of layout.edges) {
+        if (edge.from > index || edge.to < index + 1) continue;
+        const stroke = strokeWidthFor(layout, edge.from, edge.fromLane);
+        const colour = colors.get(edge.fromLane);
+        const key = `rail:${edge.from}:${edge.parent}`;
+        const x1 = laneX(edge.fromLane);
+        const x2 = laneX(edge.toLane);
+        const y1 = laneY(edge.from);
+        const line = (suffix, style) => lines.push(h('span', {
+          key: `${key}${suffix}`,
+          className: 'dsh-gw-rail-line',
+          style: { background: colour, ...style },
+        }));
+        if (x1 === x2 || edge.crossing <= bandTop) {
+          // The lane is already on its target column for this whole band.
+          line('', { left: `${x2 - stroke / 2}px`, width: `${stroke}px` });
+          continue;
+        }
+        // The edge leaves the row above the band, so its ramp falls inside the
+        // band: the same columns and the same drop, measured from the rail's top,
+        // drawn from the same polyline the row slices clip.
+        const across = edge.crossing - bandTop;
+        const ramp = edgeRuns(edge, x1, y1, x2, laneY(edge.to));
+        const rise = ramp[2].y - ramp[1].y;
+        line(':down', { left: `${x1 - stroke / 2}px`, width: `${stroke}px`, top: '0px', height: `${across}px`, bottom: 'auto' });
+        if (rise > 0) {
+          lines.push(h('svg', {
+            key: `${key}:ramp`,
+            className: 'dsh-gw-rail-turn',
+            style: { left: '0px', top: `${across}px`, width: `${width}px`, height: `${rise}px` },
+            viewBox: `0 0 ${width} ${rise}`,
+            'aria-hidden': true,
+          }, h('line', {
+            x1, y1: 0, x2, y2: rise,
+            stroke: colour, strokeWidth: stroke, strokeLinecap: 'round',
+          })));
+        }
+        line(':onward', { left: `${x2 - stroke / 2}px`, width: `${stroke}px`, top: `${across + rise}px`, bottom: '0px' });
+      }
+      return h('div', { className: 'dsh-gw-rail', style: { width }, 'aria-hidden': true }, lines);
+    }
+
+    /**
+     * The panel under one expanded row: the graph's rail beside the detail.
+     *
+     * The row is drawn even with the graph column hidden: it carries the detail's
+     * tint, its separator, and the cap on how tall the detail may grow. Only the
+     * rail is absent then, so the detail keeps the full width.
+     */
+    function DetailRegion(props) {
+      const { rail, max, children } = props;
+      return h('div', {
+        className: 'dsh-gw-detailrow',
+        style: { '--dsh-gw-detail-max': `${max}px` },
+      },
+        rail || null,
+        h('div', { className: 'dsh-gw-detailbody' }, children));
     }
 
     /**
@@ -361,6 +598,10 @@ window.__ModuleLoader__.load({
           name: String(ref.name ?? ''),
           kind: String(ref.kind ?? 'branch'),
           current: Boolean(ref.current),
+          // The worktree chip's second cell is the branch it absorbed, which is
+          // decided before this point — normalizing must not drop it, or the chip
+          // falls back to the detached form.
+          holdsBranch: typeof ref.holdsBranch === 'string' && ref.holdsBranch ? ref.holdsBranch : null,
           linkedRemotes: Array.isArray(ref.linkedRemotes)
             ? ref.linkedRemotes.map((remote) => ({
                 name: String(remote.name ?? ''),
@@ -370,30 +611,6 @@ window.__ModuleLoader__.load({
         };
       }
       return null;
-    }
-
-    /** Merge `main` and `origin/main` when both point at this commit. */
-    function mergeMatchingRemoteRefs(refs) {
-      const merged = refs.map((ref) => ({ ...ref }));
-      const localByName = new Map(
-        merged.filter((ref) => ref.kind === 'branch').map((ref) => [ref.name, ref]),
-      );
-      const absorbed = new Set();
-      for (const ref of merged) {
-        if (ref.kind !== 'remote') continue;
-        const slash = ref.name.indexOf('/');
-        if (slash <= 0 || slash === ref.name.length - 1) continue;
-        const remote = ref.name.slice(0, slash);
-        const branch = ref.name.slice(slash + 1);
-        const local = localByName.get(branch);
-        if (!local) continue;
-        local.linkedRemotes = [
-          ...(local.linkedRemotes || []),
-          { name: remote, fullName: ref.name },
-        ];
-        absorbed.add(ref);
-      }
-      return merged.filter((ref) => !absorbed.has(ref));
     }
 
     function GraphBranchGlyph(props = {}) {
@@ -418,18 +635,75 @@ window.__ModuleLoader__.load({
       return h(GraphBranchGlyph, { size: 14 });
     }
 
+    /**
+     * The worktree's own ref and the branch it holds describe one commit, so they
+     * render as one chip. The branch — with whatever remote mirrors were already
+     * merged into it — moves into the worktree ref, which is what `holdsBranch`
+     * and `linkedRemotes` describe. Detached, there is no branch to name and the
+     * chip stays as it is, to be drawn as the position it is.
+     */
+    function mergeWorktreeBranch(refs, branch) {
+      const worktree = refs.find((ref) => ref.kind === 'worktree');
+      if (!worktree || !branch) return refs;
+      const held = refs.find((ref) => ref.kind === 'branch' && ref.name === branch);
+      if (!held) return refs;
+      worktree.holdsBranch = held.name;
+      worktree.linkedRemotes = held.linkedRemotes || [];
+      worktree.current = held.current;
+      return refs.filter((ref) => ref !== held);
+    }
+
+    /**
+     * A detached HEAD's marker: the same hollow ring the graph draws on the node
+     * for the worktree's HEAD. The chip's icon then says exactly what the lane
+     * says — this position is the newest change and no branch names it.
+     */
+    function HeadRingGlyph(props = {}) {
+      const size = props.size || 14;
+      return h('svg', {
+        width: size, height: size, viewBox: '0 0 16 16', fill: 'none',
+        stroke: 'currentColor', strokeWidth: 2, 'aria-hidden': true,
+      },
+        h('circle', { cx: 8, cy: 8, r: 4.5 }));
+    }
+
     function RefChip(props) {
       // `ref` is reserved by React and is not forwarded to function-component
       // props. Keep the wire object under an ordinary prop name.
       const ref = normalizeRef(props.gitRef);
       if (!ref || !ref.name) return null;
       const linkedRemotes = Array.isArray(ref.linkedRemotes) ? ref.linkedRemotes : [];
+      const laneStyle = { '--dsh-gw-ref-color': props.laneColor };
+      if (ref.kind === 'worktree') {
+        // One chip in two cells whatever the worktree holds: its own label in the
+        // inverted fill, then the position it sits on in that commit's lane
+        // colour — the branch it holds, or HEAD when nothing is checked out, so
+        // the chip always says which worktree it is about.
+        const held = ref.holdsBranch;
+        return h('span', {
+          className: 'dsh-gw-ref dsh-gw-ref-worktree',
+          title: [
+            held ? `worktree: ${held}` : 'worktree: HEAD (no branch checked out)',
+            ...linkedRemotes.map((remote) => `remote: ${remote.fullName}`),
+          ].join('\n'),
+          style: laneStyle,
+        },
+          h('span', { className: 'dsh-gw-ref-worktree-label' }, 'worktree'),
+          h('span', { className: 'dsh-gw-ref-worktree-held' },
+            h('span', { className: 'dsh-gw-ref-worktree-icon' },
+              held ? h(BranchRefIcon, { size: 14 }) : h(HeadRingGlyph, { size: 14 })),
+            h('span', { className: 'dsh-gw-ref-worktree-name' }, held || 'HEAD'),
+            linkedRemotes.map((remote) => h('span', {
+              key: remote.fullName,
+              className: 'dsh-gw-ref-worktree-remote',
+            }, remote.name))));
+      }
       const className = `dsh-gw-ref dsh-gw-ref-${ref.kind}${ref.current && ref.kind === 'branch' ? ' dsh-gw-ref-current' : ''}`;
       const branchLike = ref.kind === 'branch' || ref.kind === 'remote';
       return h('span', {
         className,
         title: [`${ref.kind}: ${ref.name}`, ...linkedRemotes.map((remote) => `remote: ${remote.fullName}`)].join('\n'),
-        style: branchLike ? { '--dsh-gw-ref-color': props.laneColor } : undefined,
+        style: branchLike ? laneStyle : undefined,
       }, branchLike
         ? h(React.Fragment, null,
           h('span', { className: 'dsh-gw-ref-icon' }, h(BranchRefIcon, { size: 14 })),
@@ -641,35 +915,48 @@ window.__ModuleLoader__.load({
       const [state, setState] = React.useState({
         status: 'loading', repo: null, resolved: false, worktrees: [],
         graph: null, nodes: [], capabilities: [], error: null, sessionId: null, more: false,
+        // A page that came back shorter than the one asked for is the end of the
+        // history. The Host answers no "has more" field, so the requested page
+        // size is the only thing separating "stopped here" from "that is all
+        // there is" — without it a two-commit repository was offered a button
+        // that could only ever fetch nothing.
+        exhausted: false,
       });
-      const [selected, setSelected] = React.useState(() => (selection.get(sessionId) || {}).path || null);
+      const [selected, setSelected] = React.useState(null);
       const [scope, setScope] = React.useState(saved.scope || 'all');
       const [showRemote, setShowRemote] = React.useState(Boolean(saved.showRemote));
       const [showGraph, setShowGraph] = React.useState(saved.showGraph !== false);
       const [openKey, setOpenKey] = React.useState(null);
       const [reloadKey, setReloadKey] = React.useState(0);
       const [width, setWidth] = React.useState(900);
+      const [height, setHeight] = React.useState(720);
+
+      // "Show Remote Branches" scopes the history itself, not only the labels:
+      // unchecked, the Host walks local refs and drops remote-only commits.
+      const remoteParam = showRemote ? '1' : '0';
 
       const repo = (navigate && navigate.repo)
         || (state.sessionId === sessionId ? state.repo : null)
         || null;
 
       // This panel is a user-resizable column, a split pane or a float, so every
-      // column decision follows its own measured width.
+      // column decision follows its own measured width — and how tall an expanded
+      // detail may grow follows its measured height the same way.
       const rootRef = React.useRef(null);
       React.useEffect(() => {
         const node = rootRef.current;
         if (!node) return undefined;
-        if (typeof ResizeObserver !== 'function') {
+        const measure = () => {
           setWidth(node.clientWidth || 900);
+          setHeight(node.clientHeight || 720);
+        };
+        if (typeof ResizeObserver !== 'function') {
+          measure();
           return undefined;
         }
-        const observer = new ResizeObserver((entries) => {
-          const rect = entries[0] && entries[0].contentRect;
-          if (rect) setWidth(rect.width);
-        });
+        const observer = new ResizeObserver(measure);
         observer.observe(node);
-        setWidth(node.clientWidth || 900);
+        measure();
         return () => observer.disconnect();
       }, []);
 
@@ -684,19 +971,31 @@ window.__ModuleLoader__.load({
         if (state.resolved && state.sessionId === sessionId) return undefined;
         const controller = new AbortController();
         let alive = true;
-        api('worktrees', { repo }, sessionId, controller.signal)
+        // The first read after a Host restart can arrive before the Host knows this
+        // Session, which has no working directory to answer with. That is a moment,
+        // not an answer: the panel used to sit on "No Git repository found" until
+        // the tab was reloaded by hand.
+        const resolve = async () => {
+          for (let attempt = 0; ; attempt += 1) {
+            try {
+              return await api('worktrees', { repo }, sessionId, controller.signal);
+            } catch (error) {
+              if (!alive || controller.signal.aborted || attempt >= RESOLVE_ATTEMPTS) throw error;
+              await new Promise((resolveWait) => setTimeout(resolveWait, RESOLVE_BACKOFF_MS * (attempt + 1)));
+            }
+          }
+        };
+        resolve()
           .then((data) => {
             if (!alive) return;
-            const rootWorktree = data.worktrees.find((item) => item.path === data.repo.root);
-            const remembered = selection.get(sessionId) || {};
-            const savedWorktree = data.worktrees.find((item) => item.path === remembered.path);
-            const nextPath = savedWorktree
-              ? savedWorktree.path
-              : rootWorktree ? rootWorktree.path : (data.worktrees[0] || {}).path || null;
-            if (nextPath) {
-              selection.set(sessionId, { path: nextPath });
-              setSelected(nextPath);
-            }
+            // The panel reads one worktree and never offers another: the one the
+            // Session's own working directory sits in. `rev-parse --show-toplevel`
+            // answers exactly that, so `repo.root` is the current worktree even
+            // when it is a linked one.
+            const current = data.worktrees.find((item) => samePath(item.path, data.repo.root))
+              || data.worktrees[0]
+              || null;
+            if (current) setSelected(current.path);
             setState((previous) => ({
               ...previous,
               status: 'ready',
@@ -721,13 +1020,14 @@ window.__ModuleLoader__.load({
         if (!repo || !selected) return undefined;
         const controller = new AbortController();
         let alive = true;
-        api('graph', { repo, worktree: selected, scope, limit: PAGE }, sessionId, controller.signal)
+        api('graph', { repo, worktree: selected, scope, remote: remoteParam, limit: PAGE }, sessionId, controller.signal)
           .then((data) => {
             if (!alive) return;
             setState((previous) => ({
               ...previous,
               graph: data,
               nodes: data.nodes,
+              exhausted: data.nodes.length < PAGE,
               error: null,
             }));
           })
@@ -736,16 +1036,17 @@ window.__ModuleLoader__.load({
             setState((previous) => ({ ...previous, error: error.message }));
           });
         return () => { alive = false; controller.abort(); };
-      }, [repo, selected, scope, reloadKey]);
+      }, [repo, selected, scope, remoteParam, reloadKey]);
 
       const loadMore = React.useCallback(() => {
-        if (!repo || !selected || state.more) return;
+        if (!repo || !selected || state.more || state.exhausted) return;
         setState((previous) => ({ ...previous, more: true }));
-        api('graph', { repo, worktree: selected, scope, limit: PAGE, skip: state.nodes.length }, sessionId)
+        api('graph', { repo, worktree: selected, scope, remote: remoteParam, limit: PAGE, skip: state.nodes.length }, sessionId)
           .then((data) => {
             setState((previous) => ({
               ...previous,
               more: false,
+              exhausted: data.nodes.length < PAGE,
               // Lane numbers continue across pages, so appending keeps every
               // earlier row exactly where it was drawn.
               nodes: previous.nodes.concat(data.nodes),
@@ -754,22 +1055,27 @@ window.__ModuleLoader__.load({
           .catch((error) => {
             setState((previous) => ({ ...previous, more: false, error: error.message }));
           });
-      }, [repo, selected, scope, sessionId, state.more, state.nodes.length]);
+      }, [repo, selected, scope, remoteParam, sessionId, state.more, state.exhausted, state.nodes.length]);
 
       const onToggle = React.useCallback((key) => {
         setOpenKey((current) => (current === key ? null : key));
       }, []);
 
-      const onSelectWorktree = React.useCallback((path) => {
-        selection.set(sessionId, { path });
-        setSelected(path);
-        setOpenKey(null);
-      }, [sessionId]);
-
       const nodes = state.nodes || [];
       const layout = React.useMemo(() => layoutLanes(nodes), [nodes]);
-      const current = state.worktrees.find((item) => item.path === selected) || null;
+      const current = state.worktrees.find((item) => samePath(item.path, selected)) || null;
       const changeCount = current && current.status ? current.status.entries : 0;
+      const dirty = changeCount > 0;
+      // The commit the displayed worktree's HEAD sits on: the Host answers it as
+      // `head`, so the row can be marked without walking refs on the client.
+      const headOid = state.graph ? state.graph.head : null;
+      // The branch this worktree holds, or null when its HEAD is detached. The
+      // Host answers it on the graph, so the chip needs no second lookup.
+      const worktreeBranch = state.graph ? state.graph.branch : null;
+      // The working tree's row sits directly above the first commit row, so the
+      // two halves of the connector only line up while that first row is HEAD.
+      // A line to any other commit would claim a relation the history lacks.
+      const worktreeLink = dirty && Boolean(headOid) && nodes.length > 0 && nodes[0].id === headOid;
 
       // Only lanes this page actually draws get a column, so the text columns do
       // not sit behind lanes reserved for commits that were never fetched.
@@ -780,7 +1086,14 @@ window.__ModuleLoader__.load({
       }
       // Keep the Graph header readable for a one-lane repository; additional
       // lanes expand the column naturally.
-      const graphWidth = Math.max(64, layout.width * COL + MARGIN);
+      const graphWidth = Math.max(64, PAD + layout.width * COL + MARGIN);
+      // How tall one expanded detail may grow: a share of the panel, floored so a
+      // short panel still shows its first rows and capped so a tall one does not
+      // open a detail that fills the whole column.
+      const detailMax = Math.max(
+        DETAIL_MAX_FLOOR,
+        Math.min(DETAIL_MAX_CEILING, Math.round(height * DETAIL_MAX_SHARE)),
+      );
 
       const showDate = width > W_DATE;
       const showAuthor = width > W_AUTHOR;
@@ -793,8 +1106,32 @@ window.__ModuleLoader__.load({
         ...(showCommit ? ['82px'] : []),
       ].join(' ');
 
+      // Which worktree this panel is reading. It is a statement of context, not a
+      // control: the panel always follows the Session's own working directory, so
+      // there is nothing to choose. The path names the worktree, because two of
+      // them can sit on the same branch line and the path is the one thing only
+      // one of them owns; the branch rides along in the tooltip. The chip carries
+      // no "Worktree:" caption of its own: it is the toolbar's only statement of
+      // context, so the caption spent width on a word nothing needed to
+      // disambiguate it from.
       const toolbar = h('div', { className: 'dsh-gw-tbar' },
-        h('label', { className: 'dsh-gw-check', title: '在提交行上显示远程分支引用' },
+        current
+          ? h('span', {
+              className: 'dsh-gw-wt dsh-gw-wt-current',
+              key: 'wt-path',
+              title: `${current.path} — ${current.branch || '(detached)'}${current.error ? ` — ${current.error}` : ''}`,
+            },
+              // The dot's colour is the worktree's state: amber while it has
+              // uncommitted changes, green once it is clean, and error when the
+              // Host could not read it at all. `status` is null for a bare or
+              // prunable worktree and when `git status` fails, and dressing that
+              // as "clean" would be a claim the panel cannot make.
+              h('span', {
+                className: `dsh-gw-dot${!current.status ? ' dsh-gw-dot-unknown' : current.status.dirty ? '' : ' dsh-gw-dot-clean'}`,
+              }),
+              h('span', { className: 'dsh-gw-subjtext' }, compactPath(current.path)))
+          : null,
+        h('label', { className: 'dsh-gw-check', title: '显示远程分支引用，并包含仅存在于远程的提交' },
           h('input', {
             type: 'checkbox', checked: showRemote,
             onChange: (event) => setShowRemote(event.target.checked),
@@ -821,18 +1158,6 @@ window.__ModuleLoader__.load({
 
       if (state.error) head.push(h('div', { className: 'dsh-gw-error', key: 'error' }, state.error));
       if (state.status === 'loading') head.push(h('div', { className: 'dsh-gw-msg', key: 'loading' }, '读取仓库中…'));
-      if (state.worktrees.length > 1) {
-        head.push(h('div', { className: 'dsh-gw-crumbs', key: 'wts' },
-          state.worktrees.map((item) => h('button', {
-            key: item.path,
-            type: 'button',
-            className: `dsh-gw-wt${item.path === selected ? ' dsh-gw-wt-active' : ''}${item.path === state.repo ? ' dsh-gw-wt-root' : ''}`,
-            title: `${item.branch || '(detached)'} — ${item.path}${item.error ? ` — ${item.error}` : ''}`,
-            onClick: () => onSelectWorktree(item.path),
-          },
-            item.status && item.status.dirty ? h('span', { className: 'dsh-gw-dot' }) : null,
-            h('span', { className: 'dsh-gw-subjtext' }, item.branch || basename(item.path))))));
-      }
 
       const grid = [];
       grid.push(h('div', { className: 'dsh-gw-hrow', key: 'hrow', style: { '--dsh-gw-cols': columns } },
@@ -843,7 +1168,9 @@ window.__ModuleLoader__.load({
         showCommit ? h('div', { className: 'dsh-gw-hcell' }, 'Commit') : null));
 
       // The working tree rides the graph as its own row, above the newest commit.
-      if (state.repo && state.status === 'ready') {
+      // A clean worktree has nothing to show, so the row is absent instead of
+      // sitting there as a dead entry that expands into an empty detail.
+      if (state.repo && state.status === 'ready' && changeCount > 0) {
         grid.push(h('div', {
           key: 'uncommitted',
           className: `dsh-gw-row dsh-gw-rowmid${openKey === 'uncommitted' ? ' dsh-gw-row-open' : ''}`,
@@ -857,33 +1184,60 @@ window.__ModuleLoader__.load({
           showGraph ? h('div', { className: 'dsh-gw-gcell' }, h('svg', {
             width: graphWidth, height: ROW, 'aria-hidden': true,
           },
-            h('line', { x1: laneX(0), y1: ROW / 2, x2: laneX(0), y2: ROW, stroke: 'var(--dsw-alias-label-secondary)', strokeWidth: 1.6 }),
-            h('circle', { cx: laneX(0), cy: ROW / 2, r: 4, fill: 'var(--dsw-alias-bg-base)', stroke: 'var(--dsw-alias-label-secondary)', strokeWidth: 1.6 }))) : null,
+            worktreeLink
+              ? h('line', { x1: laneX(0), y1: ROW / 2, x2: laneX(0), y2: ROW, stroke: 'var(--dsw-alias-label-secondary)', strokeWidth: 1.6 })
+              : null,
+            h('circle', { cx: laneX(0), cy: ROW / 2, r: 4.5, fill: 'var(--dsw-alias-bg-base)', stroke: 'var(--dsw-alias-label-secondary)', strokeWidth: 2 }))) : null,
           h('div', { className: 'dsh-gw-cell' },
             h('span', { className: 'dsh-gw-subjtext dsh-gw-uncommitted' },
-              changeCount > 0 ? `Uncommitted Changes (${changeCount})` : 'Uncommitted Changes'),
-            changeCount > 0 ? h('span', { className: 'dsh-gw-dot', style: { marginLeft: '6px' } }) : null),
+              `Uncommitted Changes (${changeCount})`),
+            h('span', { className: 'dsh-gw-dot', style: { marginLeft: '6px' } })),
           showDate ? h('div', { className: 'dsh-gw-cell dsh-gw-cell-sec' }, '') : null,
           showAuthor ? h('div', { className: 'dsh-gw-cell dsh-gw-cell-sec' }, '') : null,
           showCommit ? h('div', { className: 'dsh-gw-cell dsh-gw-cell-sec' }, '') : null));
         if (openKey === 'uncommitted') {
-          grid.push(h(UncommittedDetail, {
-            key: 'uncommitted-detail', repo: state.repo, worktree: selected, sessionId,
+          grid.push(h(DetailRegion, {
+            key: 'uncommitted-detail',
+            max: detailMax,
+            // The working tree's row is not a lane of its own, so its band
+            // carries the connector instead: `index: -1` matches no edge.
+            rail: showGraph
+              ? h(GraphRail, { layout, index: -1, colors, worktree: worktreeLink, width: graphWidth })
+              : null,
+          }, h(UncommittedDetail, {
+            repo: state.repo, worktree: selected, sessionId,
             narrow: width < W_DETAIL_SPLIT,
             supportsStructured: state.capabilities.includes('uncommitted-v1'),
-          }));
+          })));
         }
       }
 
       for (let index = 0; index < nodes.length; index += 1) {
         const node = nodes[index];
         const laneColor = colors.get(layout.lanes[index]) || LANE_COLORS[0];
+        const isHead = Boolean(headOid) && node.id === headOid;
+        // A row is read for the local branches on the commit and for whether the
+        // worktree is there; tags, stashes and remote mirrors are not drawn. The
+        // Host sends nothing else, and the filter is repeated here because a bundle
+        // swap can leave the browser half ahead of its Host.
         const visibleRefs = (node.refs || []).map(normalizeRef).filter(Boolean)
-          .filter((ref) => showRemote || ref.kind !== 'remote');
-        const refs = mergeMatchingRemoteRefs(visibleRefs);
+          .filter((ref) => ref.kind === 'branch' || ref.kind === 'worktree')
+          // The current-worktree chip leads the Description cell. Stable sort so
+          // the rest keeps the Host's order even when an older Host appends the
+          // worktree ref after the branches.
+          .sort((left, right) => (right.kind === 'worktree') - (left.kind === 'worktree'));
+        // The worktree's own ref absorbs the branch it holds, so the two facts
+        // about this commit read as one chip instead of two.
+        const refs = mergeWorktreeBranch(visibleRefs, worktreeBranch);
+        // The "+N" badge is the Host's count minus what was drawn, so it only means
+        // anything while both halves agree on what a row draws. A Host that predates
+        // this policy counts tags, stashes and mirrors too, and no badge is better
+        // than one promising refs this browser half will not draw.
+        const counted = (node.refs || []).every((ref) => ref.kind === 'branch' || ref.kind === 'worktree');
+        const hiddenRefs = counted ? node.refCount - visibleRefs.length : 0;
         grid.push(h('div', {
           key: node.id,
-          className: `dsh-gw-row dsh-gw-rowmid${openKey === node.id ? ' dsh-gw-row-open' : ''}`,
+          className: `dsh-gw-row dsh-gw-rowmid${isHead ? ' dsh-gw-row-head' : ''}${openKey === node.id ? ' dsh-gw-row-open' : ''}`,
           style: { '--dsh-gw-cols': columns },
           role: 'button', tabIndex: 0, 'aria-expanded': openKey === node.id,
           onClick: () => onToggle(node.id),
@@ -892,14 +1246,18 @@ window.__ModuleLoader__.load({
           },
           title: `${shortOid(node.id)} ${node.subject}`,
         },
-          showGraph ? h(GraphCell, { layout, index, colors }) : null,
+          showGraph ? h(GraphCell, {
+            layout, index, colors,
+            head: isHead && !dirty,
+            above: worktreeLink && index === 0,
+          }) : null,
           h('div', { className: 'dsh-gw-cell' },
             h('div', { className: 'dsh-gw-subj' },
               refs.map((ref) => h(RefChip, {
                 key: `${ref.kind}:${ref.name}`, gitRef: ref, laneColor,
               })),
-              node.refCount > visibleRefs.length
-                ? h('span', { className: 'dsh-gw-ref', title: '还有更多引用' }, `+${node.refCount - visibleRefs.length}`)
+              hiddenRefs > 0
+                ? h('span', { className: 'dsh-gw-ref', title: '还有更多本地分支' }, `+${hiddenRefs}`)
                 : null,
               h('span', { className: 'dsh-gw-subjtext' }, node.subject || '(无提交说明)'))),
           showDate ? h('div', { className: 'dsh-gw-cell dsh-gw-cell-sec', title: absoluteTime(node.authoredAt) },
@@ -908,17 +1266,22 @@ window.__ModuleLoader__.load({
           showCommit ? h('div', { className: 'dsh-gw-cell dsh-gw-cell-mono' }, shortOid(node.id)) : null));
 
         if (openKey === node.id) {
-          grid.push(h(CommitDetail, {
+          grid.push(h(DetailRegion, {
             key: `${node.id}-detail`,
+            max: detailMax,
+            rail: showGraph ? h(GraphRail, { layout, index, colors, width: graphWidth }) : null,
+          }, h(CommitDetail, {
             repo: state.repo,
             oid: node.id,
             sessionId,
             narrow: width < W_DETAIL_SPLIT,
-          }));
+          })));
         }
       }
 
-      if (state.status === 'ready' && nodes.length > 0 && state.graph) {
+      // The next page is offered only while one exists: a repository shorter
+      // than a page used to carry a button that could only fetch nothing.
+      if (state.status === 'ready' && nodes.length > 0 && state.graph && !state.exhausted) {
         grid.push(h('div', { className: 'dsh-gw-more', key: 'more', style: { padding: '8px', textAlign: 'center' } },
           h('button', { type: 'button', className: 'dsh-gw-btn', disabled: state.more, onClick: loadMore },
             state.more ? '读取中…' : '加载更多')));
@@ -949,18 +1312,6 @@ window.__ModuleLoader__.load({
       return h('span', { className: 'dsh-gw-subjtext' }, branch ? `Git · ${branch}` : 'Git Worktree');
     }
 
-    /** Carries the navigation face down to the footer action, which renders elsewhere in the tree. */
-    const ActionContext = React.createContext(null);
-
-    /** Sidebar-foot action: the panel's own way in, beside Settings. */
-    function FooterAction() {
-      const sidebarRight = React.useContext(ActionContext);
-      return h('button', {
-        type: 'button', className: 'dsh-gw-btn',
-        onClick: () => { if (sidebarRight) sidebarRight.openTab(KIND); },
-      }, 'Git');
-    }
-
     const GuideIcon = () => h('svg', {
       viewBox: '0 0 16 16', width: 16, height: 16, 'aria-hidden': true,
       fill: 'none', stroke: 'currentColor', strokeWidth: 1.4, strokeLinecap: 'round',
@@ -973,8 +1324,6 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots', 'sidebarRightTabs'],
       apply(ctx) {
-        const sidebarRight = ctx.get('sidebarRight');
-
         ctx.effect(() => ctx.sidebarRightTabs.register({
           id: NS,
           kind: KIND,
@@ -999,13 +1348,6 @@ window.__ModuleLoader__.load({
           name: 'sidebar.right.pane.tab.title',
           key: NS,
         }, WorktreeTitle));
-
-        ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
-          name: 'sidebar.footer.action',
-          id: 'git-worktree',
-          order: 40,
-          label: 'Git Worktree',
-        }, () => h(ActionContext.Provider, { value: sidebarRight }, h(FooterAction))));
       },
     };
   },

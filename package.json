@@ -7,7 +7,8 @@
     "build": "node scripts/build.mjs && tsc -p tsconfig.server.json",
     "browser": "node dist/browser.js",
     "typecheck": "tsc -p tsconfig.server.json --noEmit && tsc -p tsconfig.ui.json --noEmit",
-    "test": "node --test tests/*.test.mjs"
+    "test": "node --test tests/*.test.mjs",
+    "geometry": "node dsh-plugin/geometry.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "1.7.5",

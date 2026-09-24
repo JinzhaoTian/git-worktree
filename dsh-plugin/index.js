@@ -46,6 +46,36 @@ async function git(cwd, args, timeout = READ_TIMEOUT) {
   }
 }
 
+/** A moment, without a timer service for one wait. */
+const wait = (ms) => new Promise((resolveWait) => setTimeout(resolveWait, ms));
+
+// A restart serves the panel's first read before the Host knows the Session again.
+// Long enough to cover that window, short enough that a broken setup still reports.
+const SESSION_WAIT_MS = 3000;
+const SESSION_POLL_MS = 120;
+
+/**
+ * The calling Session's working directory, waiting for it to register.
+ *
+ * `sessions.get(id)` is the only place the Host can learn which workspace a tab
+ * belongs to. Right after a restart it is briefly empty — the browser half restores
+ * its tab and reads before the Session is back — and a Host that answers anyway
+ * answers from its own start directory. That is exactly how the panel came to say
+ * "No Git repository found. Tried — C:\Users\<user>": the right message about a
+ * directory the tab never asked about. So the lookup waits, and when the wait runs
+ * out the caller is told about the Session rather than handed an invented path.
+ */
+async function sessionCwd(ctx, sessionId, waitMs) {
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    const sessions = ctx.get('sessions');
+    const cwd = sessions ? sessions.get(sessionId)?.header?.cwd : undefined;
+    if (cwd) return cwd;
+    if (Date.now() >= deadline) return null;
+    await wait(SESSION_POLL_MS);
+  }
+}
+
 /**
  * Resolve the repository to serve, in the order a user expects.
  *
@@ -53,16 +83,22 @@ async function git(cwd, args, timeout = READ_TIMEOUT) {
  * 2. the calling Session's working directory — this is what makes the tab follow
  *    the current workspace instead of wherever the Host happened to start,
  * 3. the configured default, then the process directory.
+ *
+ * Steps 3 are for a caller that names no Session at all. A caller that does name one
+ * gets that Session's workspace or an honest failure, because the fallbacks would
+ * answer about a repository the tab has nothing to do with.
  */
 async function resolveRepo(query, config) {
   const candidates = [query.get('repo')];
   const sessionId = query.get('session');
+  let sessionMissing = false;
   if (sessionId) {
-    const sessions = config.ctx.get('sessions');
-    const cwd = sessions ? sessions.get(sessionId)?.header?.cwd : undefined;
+    const configured = Number.isFinite(config.sessionWaitMs) ? Math.max(config.sessionWaitMs, 0) : SESSION_WAIT_MS;
+    const cwd = await sessionCwd(config.ctx, sessionId, configured);
     if (cwd) candidates.push(cwd);
+    else sessionMissing = true;
   }
-  candidates.push(config.defaultRepo, process.cwd());
+  if (!sessionMissing) candidates.push(config.defaultRepo, process.cwd());
   const tried = [];
   for (const candidate of candidates) {
     if (!candidate) continue;
@@ -74,6 +110,11 @@ async function resolveRepo(query, config) {
     } catch (error) {
       tried.push(`${candidate}: ${error instanceof Error ? error.message : String(error)}`);
     }
+  }
+  if (sessionMissing) {
+    throw new Error(
+      `Session ${sessionId} has not registered a working directory yet, and this panel only reads the workspace its Session sits in. Reopen the tab in a moment.`,
+    );
   }
   throw new Error(`No Git repository found. Tried — ${tried.join(' | ')}`);
 }
@@ -156,6 +197,29 @@ async function refsFor(cwd) {
     });
 }
 
+/**
+ * The remote-tracking refs that mirror one local ref at the same commit.
+ *
+ * `main` and `origin/main` are one position under two names, so a mirror is not
+ * a row of its own: it is a property of the local branch and rides inside that
+ * branch's chip. `refs/remotes/<remote>/HEAD` is Git's own alias for the
+ * remote's default branch rather than a name a branch can mirror, so it stays
+ * out — otherwise every row holding `main` would grow a second chip for it.
+ */
+function mirrorsOf(matched, local) {
+  if (local.kind !== 'branch') return [];
+  const mirrors = [];
+  for (const ref of matched) {
+    if (ref.kind !== 'remote') continue;
+    const slash = ref.name.indexOf('/');
+    if (slash <= 0) continue;
+    const branch = ref.name.slice(slash + 1);
+    if (branch !== local.name) continue;
+    mirrors.push({ name: ref.name.slice(0, slash), fullName: ref.name });
+  }
+  return mirrors;
+}
+
 /** One worktree's presentable state. A broken worktree reports its error instead of failing the whole list. */
 async function worktreeSummary(worktree) {
   if (worktree.bare || worktree.prunable) {
@@ -209,6 +273,10 @@ export async function graphPayload(query, config) {
 
   const scope = query.get('scope') || 'all';
   const branch = query.get('branch');
+  // Remote-tracking history is opt-out: `remote=0` walks only what exists
+  // locally. Anything else — including an older browser half that never sends
+  // the parameter — keeps every ref, so the two halves stay interchangeable.
+  const includeRemote = query.get('remote') !== '0';
   const requested = Number.parseInt(query.get('limit') || '', 10);
   const skip = Math.max(Number.parseInt(query.get('skip') || '', 10) || 0, 0);
   const limit = Math.min(Math.max(Number.isFinite(requested) ? requested : config.commitLimit, 1), 2000);
@@ -218,7 +286,17 @@ export async function graphPayload(query, config) {
   // the branches that make a graph worth looking at.
   // A selected branch is a filter, not an addition to `--all`. Passing both
   // makes Git walk their union and the selector appears to do nothing.
-  const range = branch ? [branch] : scope === 'head' ? ['HEAD'] : ['--all'];
+  // Branches, tags and (unless `remote=0`) remote-tracking refs are the history's
+  // entry points. The tool's own snapshot and turn-diff refs and the stash are
+  // not: every one of them is a tip, and a tip drawn mid-list starts a lane with
+  // no line above it, which reads as a branch out of nowhere.
+  // `--exclude` attaches to the `--all` that follows it, and its `*` also spans
+  // `refs/remotes/origin/feature/x`.
+  const notHistory = ['--exclude=refs/codex/*', '--exclude=refs/stash'];
+  const everything = includeRemote
+    ? [...notHistory, '--all']
+    : ['--exclude=refs/remotes/*', ...notHistory, '--all'];
+  const range = branch ? [branch] : scope === 'head' ? ['HEAD'] : everything;
   const raw = unborn && scope === 'head'
     ? ''
     : await git(selected.path, [
@@ -232,7 +310,7 @@ export async function graphPayload(query, config) {
       ]);
   const graph = parseGraph(raw);
   const refs = await refsFor(selected.path);
-  refs.push({ name: 'worktree', full: '', commit: selected.head, kind: 'worktree', current: false });
+  refs.push({ name: 'current worktree', full: '', commit: selected.head, kind: 'worktree', current: false });
   const byCommit = new Map();
   for (const ref of refs) {
     if (!ref.commit) continue;
@@ -240,18 +318,29 @@ export async function graphPayload(query, config) {
   }
   for (const node of graph.nodes) {
     const matched = byCommit.get(node.id) || [];
-    // A row shows its branches first, then tags; never a wall of remote mirrors.
-    const ordered = [
-      ...matched.filter((ref) => ref.kind === 'branch' || ref.kind === 'worktree' || ref.kind === 'stash'),
-      ...matched.filter((ref) => ref.kind === 'tag'),
-      ...matched.filter((ref) => ref.kind === 'remote'),
+    // A row is read for two things only: the local branches that sit on the commit
+    // and whether the worktree is there. Tags, stashes and remote mirrors are
+    // neither sent nor drawn, so the cap and the "+N" count describe exactly the
+    // set the browser renders. The log still walks every ref, so the history keeps
+    // reaching commits that only a tag or a remote mirror points at.
+    const drawable = [
+      ...matched.filter((ref) => ref.kind === 'worktree'),
+      ...matched.filter((ref) => ref.kind === 'branch'),
     ];
-    node.refs = ordered.slice(0, 6).map((ref) => ({
-      name: ref.name,
-      kind: ref.kind,
-      current: ref.current,
-    }));
-    node.refCount = ordered.length;
+    node.refs = drawable.slice(0, 6).map((ref) => {
+      // "Show Remote Branches" decides whether a local branch names the remote
+      // mirrors it shares its commit with. A remote-tracking ref is never sent
+      // as a cell of its own, so the cap and the "+N" count keep describing the
+      // local branches a row draws.
+      const mirrors = includeRemote ? mirrorsOf(matched, ref) : [];
+      return {
+        name: ref.name,
+        kind: ref.kind,
+        current: ref.current,
+        ...(mirrors.length > 0 ? { linkedRemotes: mirrors } : {}),
+      };
+    });
+    node.refCount = drawable.length;
   }
   return {
     repo: root,
