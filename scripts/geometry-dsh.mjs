@@ -1,10 +1,10 @@
 /**
  * Toolbar geometry check for the DSH Git Worktree bundle.
  *
- * Run with:  node dsh-plugin/geometry.mjs
+ * Run with:  node scripts/geometry-dsh.mjs
  *
  * The toolbar chip carries a worktree path, and a path is the one string in this
- * panel that can be arbitrarily long. `verify.mjs` checks the shortening rule as
+ * panel that can be arbitrarily long. `verify-dsh.mjs` checks the shortening rule as
  * a function, but nothing there measures the result: only a layout engine can
  * answer whether the chip, its text and its status dot still fit the toolbar at
  * the widths a docked right-sidebar panel actually takes.
@@ -14,14 +14,16 @@
  * never touches the network; it only needs a Chrome or Edge binary on this
  * machine, and it says so and exits non-zero when it cannot find one.
  */
-import { spawn } from 'node:child_process';
-import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { withPage } from './lib/cdp.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
+/** The bundle directory these checks read: the scripts live beside it, not in it. */
+const pluginDir = resolve(here, '..', 'dsh-plugin');
 const failures = [];
 
 function check(condition, message) {
@@ -45,30 +47,9 @@ const HOST_TOKENS = {
   '--dsw-specific-sidebar-fill': '#fafafa',
 };
 
-const BROWSERS = [
-  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-  'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
-  'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
-  'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  '/usr/bin/google-chrome',
-  '/usr/bin/chromium',
-  '/usr/bin/chromium-browser',
-];
-
-async function findBrowser() {
-  for (const candidate of BROWSERS) {
-    try {
-      await access(candidate);
-      return candidate;
-    } catch {
-      // Try the next one.
-    }
-  }
-  return null;
-}
-
-const client = await readFile(join(here, 'client.js'), 'utf8');
+const client = (await readFile(join(pluginDir, 'client.js'), 'utf8'))
+  .replace(/"/g, "'")
+  .replace(/(^|\n)(\s*)var ([A-Z][A-Z0-9_]*) = /g, '$1$2const $3 = ');
 const stylesheet = /const CSS = `([\s\S]*?)`;/.exec(client)?.[1];
 if (!stylesheet) {
   console.error('Could not read the stylesheet out of client.js.');
@@ -250,67 +231,21 @@ window.__measureGrid = () => Array.from(document.querySelectorAll('section[data-
 });
 </script></body></html>`;
 
-const browser = await findBrowser();
-if (!browser) {
-  console.error('No Chrome or Edge binary found; geometry was not measured.');
-  process.exit(1);
-}
-
-const workdir = await mkdtemp(join(tmpdir(), 'dsh-gw-geometry-'));
-const page = join(workdir, 'toolbar.html');
-const profile = join(workdir, 'profile');
-await writeFile(page, html, 'utf8');
-
-const port = 9337 + Math.floor(Math.random() * 200);
-const chrome = spawn(browser, [
-  '--headless=new', `--remote-debugging-port=${port}`, `--user-data-dir=${profile}`,
-  '--no-first-run', '--no-default-browser-check', '--disable-gpu',
-  '--window-size=1400,1400', '--hide-scrollbars', pathToFileURL(page).href,
-], { stdio: 'ignore' });
-
-let target = null;
-for (let attempt = 0; attempt < 40 && !target; attempt += 1) {
-  try {
-    const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
-    target = list.find((item) => item.type === 'page' && item.url.startsWith('file:'));
-  } catch {
-    // The browser is not listening yet.
-  }
-  if (!target) await sleep(250);
-}
-if (!target) {
-  chrome.kill();
-  await rm(workdir, { recursive: true, force: true });
-  console.error('The browser started but never exposed a page.');
-  process.exit(1);
-}
-
-const socket = new WebSocket(target.webSocketDebuggerUrl);
-await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = reject; });
-let nextId = 1;
-const pending = new Map();
-socket.onmessage = (event) => {
-  const message = JSON.parse(event.data);
-  if (message.id && pending.has(message.id)) {
-    const { resolve, reject } = pending.get(message.id);
-    pending.delete(message.id);
-    if (message.error) reject(new Error(JSON.stringify(message.error)));
-    else resolve(message.result);
-  }
-};
-const send = (method, params = {}) => new Promise((resolve, reject) => {
-  const id = nextId++;
-  pending.set(id, { resolve, reject });
-  socket.send(JSON.stringify({ id, method, params }));
-});
+const workdir = await mkdtemp(join(tmpdir(), 'git-worktree-geometry-'));
+const pagePath = join(workdir, 'toolbar.html');
+await writeFile(pagePath, html, 'utf8');
 
 try {
-  await send('Page.enable');
-  await sleep(600);
-  const result = await send('Runtime.evaluate', {
-    expression: 'JSON.stringify(window.__measure())', returnByValue: true,
-  });
-  const rows = JSON.parse(result.result.value);
+  await withPage({
+    url: pathToFileURL(pagePath).href,
+    use: async (session, { sandbox }) => {
+      // The page's own stylesheet and font are local, so one settle is enough.
+      await sleep(400);
+      console.log(`  ok   browser attached (${sandbox})`);
+      const measured = async (expression) => JSON.parse(
+        (await session.send('Runtime.evaluate', { expression, returnByValue: true })).result.value,
+      );
+      const rows = await measured('JSON.stringify(window.__measure())');
 
   for (const row of rows) {
     const verdict = row.dotInsideToolbar && row.dotInsideChip && row.dotWidth >= 5 && row.chipOverflowsToolbar <= 0.5
@@ -345,9 +280,7 @@ try {
   // dropped the whole `grid-template-columns` declaration. Every cell of every row
   // then wrapped onto a row of its own and the fixed 26px band clipped all of them
   // but the graph — the descriptions were drawn, just never inside their row.
-  const grids = JSON.parse((await send('Runtime.evaluate', {
-    expression: 'JSON.stringify(window.__measureGrid())', returnByValue: true,
-  })).result.value);
+  const grids = await measured('JSON.stringify(window.__measureGrid())');
   for (const section of grids) {
     const row = section.rows[0];
     const laid = (entry) => entry.beside && entry.banded && entry.descInsideRow && entry.textInsideRow;
@@ -374,14 +307,14 @@ try {
     grids.every((section) => section.rows.every((row) => row.banded && row.textInsideRow && row.textWidth > 20)),
     'every commit subject of a paged grid is drawn and readable, not clipped away',
   );
+    },
+  });
+} catch (error) {
+  // A missing browser, a renderer that cannot start, or a page that never
+  // answers all end here as one explicit failure instead of an open socket.
+  console.error(`Geometry could not be measured: ${error instanceof Error ? error.message : String(error)}`);
+  process.exit(1);
 } finally {
-  socket.close();
-  // The browser's own profile holds lock files while it exits, so the cleanup
-  // waits for it and then tolerates a directory that is still not deletable. A
-  // leftover temp directory is not worth failing a geometry check over.
-  const exited = new Promise((resolve) => { chrome.once('exit', resolve); });
-  chrome.kill();
-  await Promise.race([exited, sleep(4000)]);
   await rm(workdir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => {});
 }
 

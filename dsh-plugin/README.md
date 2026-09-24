@@ -15,10 +15,28 @@ reloads with the Session.
 | --- | --- |
 | `package.json` | Bundle manifest: `dsh.bundle.patch` plus the `dsh.client` browser half |
 | `cordis.patch.yml` | The one Loader row this bundle inserts |
-| `index.js` | Host half: every Git call, exposed on one same-origin HTTP route |
-| `client.js` | Browser half: registers the tab type, its body and its chip title |
-| `verify.mjs` | Pre-install checks: parses both halves, validates the manifest and patch, exercises the layout and rendering |
-| `geometry.mjs` | Browser geometry check: renders the real toolbar chip and measures it at the widths a panel takes |
+| `index.js` | Host half — **built** from `src/dsh/host.ts`; do not edit it here |
+| `client.js` | Browser half — **built** from `src/dsh/client.ts`; do not edit it here |
+This directory holds only what is installed: the manifest, the patch, and the two built
+halves. Its checks live in the repository's `scripts/` directory, because they are
+development tools rather than part of the bundle.
+
+`index.js` and `client.js` are **not committed** — they are build output, ignored the same
+way `dist/` is. The profile installs this directory by linking to it, so the files must
+exist here when it is installed, which is what the build step below produces.
+
+The two artifacts are build output. Their sources are:
+
+| Source | Role |
+| --- | --- |
+| `../src/core/` | The shared Git core: every `execFile` bind, worktree parsing, refs, the paged graph, and the numstat/diff readers |
+| `../src/dsh/host.ts` | This bundle's host policy: Session→workspace resolution, the HTTP route, and the payload mapping |
+| `../src/ui/worktree.ts` | The shared React view, transport-injected, mounted here and by the Codex/MCP app |
+| `../src/dsh/client.ts` | This bundle's browser policy: the same-origin transport and the tab registration |
+| `../scripts/build-dsh.mjs` | esbuild: bundles both halves into this directory, unminified and without runtime dependencies |
+| `../scripts/verify-dsh.mjs` | Pre-install checks: parses both halves, validates the manifest and patch, exercises the layout and rendering |
+| `../scripts/geometry-dsh.mjs` | Browser geometry check: renders the real toolbar chip and measures it at the widths a panel takes |
+| `../scripts/lib/cdp.mjs` | The dependency-free DevTools client both `geometry-dsh.mjs` uses, with cross-platform browser discovery |
 
 ## Why a Host half exists
 
@@ -32,15 +50,32 @@ server, which means:
 - every Git bind is a fixed argument array through `execFile` — no shell string is ever
   assembled from input.
 
-Routes (all `GET`, all relative to `/dsh-git-worktree/api`):
+Reads are `GET`, relative to `/dsh-git-worktree/api`:
 
 | `action` | Parameters | Answers |
 | --- | --- | --- |
-| `worktrees` | `repo?` | Repository root, its branch, and every worktree with dirty status and HEAD subject |
+| `worktrees` | `repo?` | Repository root, its branch, and every worktree with dirty status and HEAD subject. `capabilities` includes `operations-v1`. |
 | `graph` | `repo?`, `worktree?`, `scope?`, `branch?`, `remote?`, `limit?`, `skip?` | Paged commit graph, parent edges, branch/tag/remote refs |
 | `diff` | `repo?`, `worktree?` | `git diff HEAD --stat` plus the patch |
 | `commit` | `repo?`, `oid` | Structured commit metadata and changed-file stats |
 | `uncommitted` | `repo?`, `worktree?` | Structured tracked, staged and untracked file stats |
+
+Writes are `POST` with a JSON body, on the same route:
+
+| `action` | Body | Answers |
+| --- | --- | --- |
+| `worktree-create` | `repo?`, `path`, `branch`, `startPoint?` | The created worktree's path, branch and commit |
+| `rebase-preview` | `repo?`, `worktree`, `target` | An expiring one-use plan; changes nothing |
+| `rebase-apply` | `planId`, `confirm: true` | Applies the plan after re-reading what it was based on |
+| `cherry-pick-preview` | `repo?`, `worktree`, `commit` | An expiring one-use plan; changes nothing |
+| `cherry-pick-apply` | `planId`, `confirm: true` | Applies the plan after re-reading what it was based on |
+
+A write is refused with HTTP 403 when it names another origin and with HTTP 415 when it
+does not declare `application/json`. That pair is the whole guard: this route is
+same-origin and token-less, a cross-site request cannot set that content type without a
+preflight, and this route answers no preflight. The writes themselves are the same
+`src/core/operations.ts` code the Codex tools call, so the readiness checks, the plan
+lifetime and the apply-time rechecks are identical in both containers.
 
 A Git failure is returned as `{ "ok": false, "error": "…" }` with HTTP 200, because a
 broken worktree is an answer the tab renders, not a transport error.
@@ -50,17 +85,27 @@ broken worktree is an answer the tab renders, not a transport error.
 The shell in this session cannot run commands, so the build and install steps are yours:
 
 ```powershell
+# 0. Build both halves from source (TypeScript → this directory)
+npm run build
+
 # 1. Pre-install checks (parses both halves, validates the manifest and patch)
-node D:\repos\git-worktree\dsh-plugin\verify.mjs
+npm run verify
 
 # 2. Toolbar geometry (needs Chrome or Edge; renders the chip and measures it)
-node D:\repos\git-worktree\dsh-plugin\geometry.mjs
+npm run geometry
 ```
+
+Step 0 is not optional, and on a fresh clone it is the difference between a check that
+runs and one that stops with `dsh-plugin/index.js is missing`. `index.js` and `client.js`
+are build output and are not in git, so editing them directly is lost on the next build,
+and verify reads the built text. The build needs no network and writes inside this
+directory only.
 
 Then install the directory as a bundle through the `plugin_manager` tool with
 `action: install_bundle` and `target: D:\repos\git-worktree\dsh-plugin`. The manifest
 declares no npm dependencies and no install scripts, so nothing needs to be fetched or
-built, and there should be no `pendingBuilds` to approve.
+built **at install time** — the shared core and view are bundled into the two artifacts,
+and there should be no `pendingBuilds` to approve.
 
 ### The bundle must also be selected by the profile
 
@@ -171,15 +216,18 @@ is the whole prerequisite: `npm i -g pnpm`.
   Session to register before resolving anything. While a Session is named, neither side
   answers from the Host's own start directory.
 
-The panel is read-only with respect to the repository: nothing in it checks out a branch,
-changes the Session's working directory, or moves a worktree. It follows the Session
-instead — the Host resolves the repository with `rev-parse --show-toplevel`, which answers
-the current worktree even when the Session sits in a linked one.
+The panel never checks out a branch and never changes the Session's working directory: it
+follows the Session instead — the Host resolves the repository with
+`rev-parse --show-toplevel`, which answers the current worktree even when the Session sits
+in a linked one. What it can change, it changes explicitly: creating a worktree, or
+rebasing/cherry-picking after a preview and an Apply, both through the guarded write routes
+above and both refused unless the target worktree is active, checked out, clean and free of
+a stopped operation.
 
 ## Current limits
 
-- Read-only. Rebase, cherry-pick, merge and commit are deliberately not implemented yet;
-  the guarded preview/apply flow in the root project is the design to port.
+- Merge and commit are not implemented; rebase and cherry-pick are, through the guarded
+  preview/apply flow.
 - The graph is a deterministic lane layout rendered as row-local SVG. Columns waiting for a
   commit that already arrived collapse before the next row is placed, so the branches still
   running slide left and an older commit is drawn as far left as its branch allows; a lane
@@ -200,7 +248,7 @@ the current worktree even when the Session sits in a linked one.
   expanded row itself, drawing the same two columns and the same ramp, measured from the
   rail's top. Without it the lane stopped at
   the row above and started again below the detail, leaving the dots looking unrelated.
-- The two halves are separate files. `verify.mjs` parses both, and
+- The two halves are separate files. `scripts/verify-dsh.mjs` parses both, and
   `node --check dsh-plugin/index.js` parses the host half on its own, because the
   manifest declares `"type": "module"`. If the installer ever refuses the host half's
   static imports, the fix is to load `node:child_process` and friends through
@@ -210,8 +258,8 @@ the current worktree even when the Session sits in a linked one.
 
 Checked against a live Harness, not by inspection alone:
 
-- both halves parse and the manifest and patch validate (`verify.mjs`);
-- the toolbar chip is measured, not just styled: `geometry.mjs` renders the real
+- both halves parse and the manifest and patch validate (`scripts/verify-dsh.mjs`);
+- the toolbar chip is measured, not just styled: `scripts/geometry-dsh.mjs` renders the real
   stylesheet and the real chip markup in headless Chrome at four path shapes and five
   panel widths, and asserts that the status dot keeps its full size inside both the chip
   and the toolbar, that the chip never extends past the toolbar, and that a path too long
@@ -219,20 +267,20 @@ Checked against a live Harness, not by inspection alone:
 - `install_bundle` links the package into the profile and applies it (`application: applied`);
 - the client registers: `sidebar.right.pane.tab` and `sidebar.right.pane.tab.title` each
   list `@local/dsh-git-worktree` as an active occupant, and the tab opens from the tab
-  strip's guide card; `sidebar.footer.action` no longer lists it, which `verify.mjs` guards;
+  strip's guide card; `sidebar.footer.action` no longer lists it, which `scripts/verify-dsh.mjs` guards;
 - a real repository renders: worktree list, branch, uncommitted-change count, the commit
   lane list with ref chips, and an expanded `git show`;
 - a row draws local branches and the worktree chip only: the host behavior block puts a
   branch, a remote mirror, a tag and a stash on one commit and asserts that the row carries
   the first two kinds and that `refCount` agrees with what was sent, while the panel render
   asserts the same filter and that an older Host's count earns no `+N` badge;
-- an expanded row keeps the graph's column: `verify.mjs` renders the panel with a row open
+- an expanded row keeps the graph's column: `scripts/verify-dsh.mjs` renders the panel with a row open
   and asserts the rail beside the detail, the width it indents by, and the lane's two columns
   — its own column throughout for a straight lane, and for a lane change two runs on the two
   columns with the crossing drawn as an arc between them. It also asserts
   the cap: its share of the panel's height at three panel heights, its floor and its ceiling,
   and that hiding the graph column drops the rail without dropping the row. The geometry
-  screenshot in a headless browser — `geometry.mjs` now does this on every run — from the
+  screenshot in a headless browser — `scripts/geometry-dsh.mjs` now does this on every run — from the
   plugin's own markup and stylesheet plus the Host's light-theme tokens, because this session
   has no control of the live page (a refresh of the tab is what shows the change there);
 - the session workspace resolves on the Host, so the tab follows the current workspace
@@ -254,7 +302,7 @@ arrived.
 
 The fourth came from using the panel: the `Uncommitted Changes` row was drawn whenever a
 repository resolved, so a clean worktree showed a dead row that expanded into an empty
-detail; it now renders only while the worktree has changes. `verify.mjs` carries a regression
+detail; it now renders only while the worktree has changes. `scripts/verify-dsh.mjs` carries a regression
 check for the blanked graph and now asserts both cleanliness states on real render output — a
 dirty worktree keeps the row, a clean one has none.
 
@@ -277,6 +325,6 @@ a saving of at least five characters before it will shorten at all, which answer
 with `E:/w…/ThBIMWindowsUI`. The chip also clips its own overflow now, as a second line of
 defence beside the shrink it already had, so an over-long path cannot push the chip's own
 contents out of the toolbar. Both are checked on measured geometry rather than on source
-text: `verify.mjs` asserts the rule's answers and the chip's rules, and `geometry.mjs` puts
+text: `scripts/verify-dsh.mjs` asserts the rule's answers and the chip's rules, and `scripts/geometry-dsh.mjs` puts
 the same markup in a browser and asserts the dot stays whole and inside the chip at every
 width.

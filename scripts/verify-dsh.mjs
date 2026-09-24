@@ -1,13 +1,13 @@
 /**
  * Pre-install checks for the DSH Git Worktree bundle.
  *
- * Run with:  node dsh-plugin/verify.mjs
+ * Run with:  node scripts/verify-dsh.mjs
  *
  * It parses both plugin halves, checks the manifest and patch the installer
  * reads, and confirms every file the manifest points at exists. It never
  * installs anything and never touches the network.
  */
-import { readFile, mkdir, rm, writeFile } from 'node:fs/promises';
+import { access, readFile, mkdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -15,6 +15,8 @@ import { spawnSync } from 'node:child_process';
 import vm from 'node:vm';
 
 const here = dirname(fileURLToPath(import.meta.url));
+/** The bundle directory these checks read: the scripts live beside it, not in it. */
+const pluginDir = resolve(here, '..', 'dsh-plugin');
 const failures = [];
 const notes = [];
 
@@ -25,7 +27,7 @@ function check(condition, message) {
 
 /** Parse a module without running any of it, so a syntax error is caught here. */
 async function checkSyntax(relative) {
-  const path = join(here, relative);
+  const path = join(pluginDir, relative);
   const source = await readFile(path, 'utf8');
   if (typeof vm.SourceTextModule === 'function') {
     // Compilation only: constructing a module never evaluates it.
@@ -51,7 +53,22 @@ async function checkSyntax(relative) {
   return source;
 }
 
-const manifest = JSON.parse(await readFile(join(here, 'package.json'), 'utf8'));
+// Both halves are build output and are not committed, so a check run against a
+// fresh clone has nothing to read. Say that once, with the command that fixes
+// it, instead of failing inside the first readFile.
+for (const artifact of ['index.js', 'client.js']) {
+  try {
+    await access(join(pluginDir, artifact));
+  } catch {
+    console.error(
+      `dsh-plugin/${artifact} is missing: it is build output and is not committed.\n`
+      + 'Run "npm run build" first, then this check again.',
+    );
+    process.exit(1);
+  }
+}
+
+const manifest = JSON.parse(await readFile(join(pluginDir, 'package.json'), 'utf8'));
 check(manifest.name === '@local/dsh-git-worktree', `manifest name is ${manifest.name}`);
 check(manifest.type === 'module', 'manifest declares ES modules');
 check(manifest.exports?.['.'] === './index.js', 'manifest exports the host half');
@@ -64,7 +81,7 @@ check(
   'browser half loads after the right-sidebar package',
 );
 
-const patchPath = resolve(here, manifest.dsh.bundle.patch);
+const patchPath = resolve(pluginDir, manifest.dsh.bundle.patch);
 const patch = await readFile(patchPath, 'utf8');
 check(patch.includes('insert:'), 'patch inserts a row');
 check(patch.includes(manifest.name), 'patch row names this package');
@@ -72,15 +89,39 @@ check(patch.includes(manifest.name), 'patch row names this package');
 await checkSyntax('index.js');
 await checkSyntax('client.js');
 
-const host = await readFile(join(here, 'index.js'), 'utf8');
-check(host.includes("export function apply"), 'host half exports apply');
-check(host.includes("export const inject = ['webServer']"), 'host half injects the web server');
+// The host half is built from TypeScript, so a bundler formats it: it may pick
+// either quote character and reorder little else. Every check that reads the
+// host's text below runs against a quote-normalized copy, so an assertion can
+// neither fail on formatting alone nor — worse for the negative checks — pass
+// because a bundler chose a quote its pattern does not spell.
+const host = (await readFile(join(pluginDir, 'index.js'), 'utf8')).replace(/"/g, "'");
 check(host.includes('ctx.webServer.register'), 'host half registers its HTTP route');
 // Only a bare `exec(` is a shell call; `/(\d+)/.exec(x)` is RegExp.exec.
 check(!/(^|[^.\w])exec\(/.test(host), 'host half never calls the shell exec');
 check(host.includes('execFileAsync'), 'host half uses execFile with argument arrays');
+// The host half is built from TypeScript, so its exports are judged by what the
+// module actually exposes rather than by source text a bundler is free to
+// reformat: an `export function` may be emitted as a trailing export list, and a
+// quote style is not a behavior.
+const hostModule = await import(pathToFileURL(join(pluginDir, 'index.js')).href);
+check(typeof hostModule.apply === 'function', 'host half exports apply');
+check(
+  Array.isArray(hostModule.inject) && hostModule.inject.length === 1 && hostModule.inject[0] === 'webServer',
+  `host half injects the web server (inject is ${JSON.stringify(hostModule.inject)})`,
+);
 
-const client = await readFile(join(here, 'client.js'), 'utf8');
+// The browser half is built from TypeScript too, so the checks that read its
+// text run against a cosmetic-normalized copy for the same reason the host's do:
+// a bundler may pick either quote character, and it may emit `var` where the
+// source declared a top-level `const`. Neither is a behavior, and a check that
+// passed or failed on either would be measuring the bundler rather than the
+// panel. Normalizing both keeps the negative checks meaningful as well.
+const asBuilt = (text) => text
+  .replace(/"/g, "'")
+  .replace(/\bvoid 0\b/g, 'undefined')
+  .replace(/(^|\n)(\s*)var ([A-Z][A-Z0-9_]*) = /g, '$1$2const $3 = ');
+
+const client = asBuilt(await readFile(join(pluginDir, 'client.js'), 'utf8'));
 check(client.includes('__ModuleLoader__.load'), 'browser half registers a client module');
 check(client.includes('ctx.sidebarRightTabs.register'), 'browser half registers a tab type');
 check(client.includes("'sidebar.right.pane.tab'"), 'browser half registers the tab body');
@@ -142,8 +183,11 @@ check(client.includes('function clipSegment'), 'a slice is clipped exactly, not 
 check(client.includes('function rowPath'), 'one row draws its own slice of the polyline');
 check(!client.includes('clipCurve'), 'no bezier trimming survives the polyline routing');
 {
-  const start = client.indexOf('    /**\n     * One lane change, as the polyline');
-  const end = client.indexOf("/** One row's slice of the graph");
+  // Marked by the declarations the slice spans rather than by the prose comment
+  // that used to sit above it: a bundler strips comments and may re-indent what
+  // it keeps, but the two function names survive it unchanged.
+  const start = client.indexOf('function edgeRuns');
+  const end = client.indexOf('function GraphCell');
   // `edgeRuns` measures in rows and columns, and both are declared with the other
   // geometry constants, outside the slice: read them out rather than assume them.
   const rowHeight = Number(/const ROW = (\d+)/.exec(client)?.[1]);
@@ -501,7 +545,10 @@ check(
   'a detached worktree is marked with a ring',
 );
 {
-  const ring = /function HeadRingGlyph[\s\S]*?\n    \}/.exec(client)?.[0] ?? '';
+  // Bounded by the next declaration rather than by a brace: the built file's
+  // indentation is the bundler's, and a lazy brace match stops at the first
+  // object literal's closing brace inside the function.
+  const ring = client.slice(client.indexOf('function HeadRingGlyph'), client.indexOf('function RefChip'));
   check(/fill: 'none'/.test(ring) && /h\('circle'/.test(ring), 'the marker is a hollow circle');
   check(!client.includes('HeadTagGlyph'), 'the tag glyph is gone, not merely unused');
 }
@@ -510,7 +557,9 @@ check(
   'a detached worktree reads HEAD in the same cell a branch name would use',
 );
 check(
-  client.includes(".sort((left, right) => (right.kind === 'worktree') - (left.kind === 'worktree'))"),
+  // Spelled as a ternary rather than by subtracting two booleans, which is what
+  // the TypeScript source can express; the ordering it asserts is unchanged.
+  client.includes(".sort((left, right) => (right.kind === 'worktree' ? 0 : 1) - (left.kind === 'worktree' ? 0 : 1))"),
   'the worktree chip sorts ahead of branch chips in the Description cell',
 );
 check(
@@ -593,8 +642,8 @@ let captured;
 // injects its stubs here rather than on the verifier's globalThis.
 let sandbox;
 {
-  const source = await readFile(join(here, 'client.js'), 'utf8');
-  const absolute = join(here, 'client.js');
+  const source = await readFile(join(pluginDir, 'client.js'), 'utf8');
+  const absolute = join(pluginDir, 'client.js');
   sandbox = {
     window: {
       __ModuleLoader__: {
@@ -1324,7 +1373,7 @@ let sandbox;
 // Sanity: the graph layout is the one algorithm in the bundle a reader cannot
 // check by eye, so exercise the real implementation on a merge topology.
 {
-  const source = await readFile(join(here, 'client.js'), 'utf8');
+  const source = asBuilt(await readFile(join(pluginDir, 'client.js'), 'utf8'));
   const start = source.indexOf('function layoutLanes');
   const end = source.indexOf('function strokeWidthFor');
   // `layoutLanes` places the crossings, so it reads the row height and the two
@@ -1458,7 +1507,7 @@ let sandbox;
       await writeFile(join(scratch, 'a.txt'), 'one changed\n');
       await writeFile(join(scratch, 'untracked.txt'), 'new\n');
 
-      const host = await import(pathToFileURL(join(here, 'index.js')).href);
+      const host = await import(pathToFileURL(join(pluginDir, 'index.js')).href);
       const config = { ctx: { get: () => undefined }, defaultRepo: scratch, commitLimit: 50 };
       const query = (params) => ({ get: (key) => (key in params ? params[key] : null) });
 
@@ -1659,6 +1708,96 @@ let sandbox;
         Boolean(sessionError) && !String(sessionError.message).includes(scratchName),
         'the fallback repository is never offered to a caller that named a Session',
       );
+
+      // The panel changes history through the same route it reads, so the guard
+      // and the preview/apply round trip are exercised here rather than trusted.
+      // The route is same-origin and token-less: what stops another page is the
+      // JSON content-type (which a cross-site request cannot send without a
+      // preflight this server never answers) plus the Origin check.
+      {
+        const routes = [];
+        hostModule.apply({
+          get: () => undefined,
+          effect: (fn) => { fn(); },
+          webServer: { register: (route) => { routes.push(route); return () => {}; } },
+        }, { defaultRepo: scratch, commitLimit: 50 });
+        check(routes.length === 1 && typeof routes[0].handler === 'function', 'the host registers exactly one HTTP route');
+
+        const call = async (action, { method = 'POST', body, headers = {} } = {}) => {
+          const result = { status: 0, payload: null };
+          const request = {
+            method,
+            url: `/dsh-git-worktree/api/${action}`,
+            headers: { host: '127.0.0.1:1', 'content-type': 'application/json', ...headers },
+            async *[Symbol.asyncIterator]() {
+              if (body !== undefined) yield Buffer.from(JSON.stringify(body));
+            },
+          };
+          await routes[0].handler(request, {
+            writeHead(status) { result.status = status; },
+            end(text) { result.payload = text ? JSON.parse(text) : null; },
+          });
+          return result;
+        };
+
+        const crossSite = await call('rebase-preview', {
+          body: { repo: scratch, worktree: scratch, target: 'side' },
+          headers: { origin: 'https://example.invalid' },
+        });
+        check(crossSite.status === 403, `a write from another origin is refused (HTTP ${crossSite.status})`);
+
+        const wrongType = await call('rebase-preview', {
+          body: { repo: scratch, worktree: scratch, target: 'side' },
+          headers: { 'content-type': 'text/plain' },
+        });
+        check(wrongType.status === 415, `a write that is not JSON is refused (HTTP ${wrongType.status})`);
+
+        const readAsWrite = await call('rebase-preview', { method: 'GET' });
+        check(readAsWrite.status === 404, `a write action is not reachable as a read (HTTP ${readAsWrite.status})`);
+
+        const refused = await call('rebase-preview', { body: { repo: scratch, worktree: scratch, target: 'side' } });
+        check(
+          refused.payload && refused.payload.ok === false && /clean/.test(String(refused.payload.error)),
+          `a dirty worktree is refused a plan through the route (${refused.payload ? String(refused.payload.error).slice(0, 40) : 'no answer'})`,
+        );
+
+        // A fresh worktree is clean, so it is the one the round trip can use.
+        const linkedPath = join(scratch, '..', `verify-wt-${process.pid}`);
+        const created = await call('worktree-create', {
+          body: { repo: scratch, path: linkedPath, branch: 'verify-round-trip', startPoint: 'HEAD' },
+        });
+        check(
+          created.payload && created.payload.ok === true && created.payload.data && created.payload.data.created === true,
+          `the route creates a worktree (${created.payload && created.payload.data ? created.payload.data.path : JSON.stringify(created.payload)})`,
+        );
+
+        const plan = await call('rebase-preview', {
+          body: { repo: scratch, worktree: linkedPath, target: 'side' },
+        });
+        const planId = plan.payload && plan.payload.data ? plan.payload.data.planId : null;
+        check(
+          Boolean(planId) && Array.isArray(plan.payload.data.warnings) && typeof plan.payload.data.expiresAt === 'string',
+          'the route plans a rebase and answers an expiring plan',
+        );
+
+        const applied = await call('rebase-apply', { body: { planId, confirm: true } });
+        check(
+          applied.payload && applied.payload.ok === true && applied.payload.data && applied.payload.data.applied === true,
+          `the route applies the confirmed plan (${applied.payload && applied.payload.data ? applied.payload.data.head.slice(0, 8) : JSON.stringify(applied.payload)})`,
+        );
+
+        const replayed = await call('rebase-apply', { body: { planId, confirm: true } });
+        check(
+          replayed.payload && replayed.payload.ok === false && /Plan not found/.test(String(replayed.payload.error)),
+          'a plan can only be attempted once, including through the route',
+        );
+
+        const capabilities = await call('worktrees', { method: 'GET', body: undefined });
+        check(
+          capabilities.payload && capabilities.payload.data && capabilities.payload.data.capabilities.includes('operations-v1'),
+          'the read payload advertises that this host can change history',
+        );
+      }
     }
   } catch (error) {
     check(false, `host behavior checks threw: ${error.message}`);

@@ -7,6 +7,7 @@ import { registerAppResource, RESOURCE_MIME_TYPE } from "@modelcontextprotocol/e
 import { registerWorktreeTools } from "./mcp/tools/worktrees.js";
 import { registerStatusTool } from "./mcp/tools/status.js";
 import { registerLogTool } from "./mcp/tools/log.js";
+import { registerHistoryTools } from "./mcp/tools/history.js";
 import { registerOperationTools } from "./mcp/tools/operations.js";
 
 export const GRAPH_UI_URI = "ui://git-worktree/graph-v1.html";
@@ -19,6 +20,7 @@ export function createServer(): McpServer {
   registerWorktreeTools(server, GRAPH_UI_URI);
   registerStatusTool(server);
   registerLogTool(server);
+  registerHistoryTools(server);
   registerOperationTools(server);
 
   registerAppResource(server, "git-worktree-graph", GRAPH_UI_URI,

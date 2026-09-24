@@ -27,6 +27,7 @@ test("MCP exposes all requested tools and the graph UI resource", async () => {
     const tools = await client.listTools();
     assert.deepEqual(new Set(tools.tools.map((tool) => tool.name)), new Set([
       "git_worktree_list", "git_worktree_create", "git_status", "git_log_graph",
+      "git_commit_detail", "git_uncommitted", "git_diff",
       "git_rebase_preview", "git_rebase_apply", "git_cherry_pick_preview", "git_cherry_pick_apply"
     ]));
     assert.equal(tools.tools.find((tool) => tool.name === "git_worktree_list")?._meta?.ui?.resourceUri, GRAPH_UI_URI);

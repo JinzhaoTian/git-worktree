@@ -5,6 +5,10 @@
     "moduleResolution": "Bundler",
     "jsx": "react-jsx",
     "strict": true,
+    // The shared view under `src/view` is a transcription of the hand-written
+    // panel, so its render bodies carry implicit `any` parameters while its
+    // payloads, panel state and transport are typed. See `tsconfig.view.json`.
+    "noImplicitAny": false,
     "noEmit": true,
     "skipLibCheck": true,
     "lib": ["ES2022", "DOM"],

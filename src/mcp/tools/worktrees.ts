@@ -1,19 +1,13 @@
-import { resolve, isAbsolute } from "node:path";
-import { mkdir, realpath } from "node:fs/promises";
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
-import { commitOid, failure, git, listWorktrees, repoRoot, result } from "../git.js";
+import { failure, repoRoot, result } from "../git.js";
+import { createWorktree as createInCore } from "../../core/operations.js";
+import { worktreesPayload } from "../payloads.js";
 
+/** Create a branch and a worktree for it. The Git work itself is shared core code. */
 export async function createWorktree(repoPath: string | undefined, path: string, branch: string, startPoint = "HEAD") {
-  const root = await repoRoot(repoPath);
-  if (branch.startsWith("-")) throw new Error("Branch cannot start with '-'.");
-  await git(root, ["check-ref-format", "--branch", branch]);
-  const oid = await commitOid(root, startPoint);
-  const target = isAbsolute(path) ? resolve(path) : resolve(root, path);
-  await mkdir(resolve(target, ".."), { recursive: true });
-  await git(root, ["worktree", "add", "-b", branch, target, oid], 120_000);
-  return { created: true, path: await realpath(target), branch, head: oid };
+  return createInCore(await repoRoot(repoPath), path, branch, startPoint);
 }
 
 export function registerWorktreeTools(server: McpServer, graphUri: string): void {
@@ -24,7 +18,7 @@ export function registerWorktreeTools(server: McpServer, graphUri: string): void
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
     _meta: { ui: { resourceUri: graphUri } }
   }, async ({ repoPath }) => {
-    try { return result(await listWorktrees(repoPath)); }
+    try { return result(await worktreesPayload(repoPath)); }
     catch (error) { return failure(error); }
   });
 

@@ -4,10 +4,10 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
-import { listWorktrees, repoRoot } from "./mcp/git.js";
+import { repoRoot } from "./mcp/git.js";
+import { commitDetailPayload, diffPayload, graphPayload, uncommittedPayload, worktreesPayload } from "./mcp/payloads.js";
 import { createWorktree } from "./mcp/tools/worktrees.js";
 import { getStatus } from "./mcp/tools/status.js";
-import { getGraph } from "./mcp/tools/log.js";
 import { previewRebase, previewCherryPick, applyPlan } from "./mcp/tools/operations.js";
 
 const HOST = "127.0.0.1";
@@ -15,6 +15,7 @@ const MAX_BODY = 64 * 1024;
 const requestSchema = z.object({
   name: z.enum([
     "git_worktree_list", "git_worktree_create", "git_status", "git_log_graph",
+    "git_commit_detail", "git_uncommitted", "git_diff",
     "git_rebase_preview", "git_rebase_apply", "git_cherry_pick_preview", "git_cherry_pick_apply"
   ]),
   arguments: z.record(z.string(), z.unknown()).default({})
@@ -52,7 +53,7 @@ function send(response: ServerResponse, status: number, contentType: string, bod
 async function dispatch(repoPath: string, name: string, raw: Record<string, unknown>): Promise<unknown> {
   switch (name) {
     case "git_worktree_list":
-      return listWorktrees(repoPath);
+      return worktreesPayload(repoPath);
     case "git_worktree_create": {
       const args = z.object({ path: z.string().min(1), branch: z.string().min(1), startPoint: z.string().default("HEAD") }).parse(raw);
       return createWorktree(repoPath, args.path, args.branch, args.startPoint);
@@ -62,8 +63,27 @@ async function dispatch(repoPath: string, name: string, raw: Record<string, unkn
       return getStatus(repoPath, args.worktreePath);
     }
     case "git_log_graph": {
-      const args = z.object({ worktreePath: z.string().min(1), limit: z.number().int().min(1).max(500).default(150) }).parse(raw);
-      return getGraph(repoPath, args.worktreePath, args.limit);
+      const args = z.object({
+        worktreePath: z.string().optional(),
+        scope: z.enum(["all", "head"]).default("all"),
+        branch: z.string().optional(),
+        includeRemote: z.boolean().default(true),
+        limit: z.number().int().min(1).max(2000).default(150),
+        skip: z.number().int().min(0).default(0)
+      }).parse(raw);
+      return graphPayload({ repoPath, ...args });
+    }
+    case "git_commit_detail": {
+      const args = z.object({ oid: z.string().min(7).max(64) }).parse(raw);
+      return commitDetailPayload(repoPath, args.oid);
+    }
+    case "git_uncommitted": {
+      const args = z.object({ worktreePath: z.string().optional() }).parse(raw);
+      return uncommittedPayload(repoPath, args.worktreePath);
+    }
+    case "git_diff": {
+      const args = z.object({ worktreePath: z.string().optional() }).parse(raw);
+      return diffPayload(repoPath, args.worktreePath);
     }
     case "git_rebase_preview": {
       const args = z.object({ worktreePath: z.string().min(1), target: z.string().min(1) }).parse(raw);

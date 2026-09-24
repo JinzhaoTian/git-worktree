@@ -1,12 +1,12 @@
-export interface Worktree {
-  path: string;
-  head: string;
-  branch: string | null;
-  bare: boolean;
-  detached: boolean;
-  locked: string | null;
-  prunable: string | null;
-}
+/**
+ * The MCP front end's remaining own types.
+ *
+ * `Worktree` is the shared core's definition rather than a second copy, because
+ * the two hosts must read a worktree the same way; the graph, the operation
+ * preview and the uncommitted read are all shared payloads too. What is left
+ * here is the one shape only the Codex app has: its single-worktree status read.
+ */
+export type { Worktree } from "../core/types.js";
 
 export interface GitStatus {
   path: string;
@@ -14,35 +14,4 @@ export interface GitStatus {
   entries: number;
   branch: string | null;
   head: string;
-}
-
-export interface CommitNode {
-  id: string;
-  parents: string[];
-  subject: string;
-  author: string;
-  authoredAt: string;
-  refs: string[];
-}
-
-export interface CommitGraph {
-  worktreePath: string;
-  head: string;
-  branch: string | null;
-  nodes: CommitNode[];
-  edges: { source: string; target: string }[];
-  refs: { name: string; commit: string; kind: "branch" | "tag" | "worktree" }[];
-}
-
-export interface OperationPreview {
-  planId: string;
-  operation: "rebase" | "cherry-pick";
-  worktreePath: string;
-  branch: string;
-  head: string;
-  target: string;
-  targetCommit: string;
-  commits: string[];
-  warnings: string[];
-  expiresAt: string;
 }

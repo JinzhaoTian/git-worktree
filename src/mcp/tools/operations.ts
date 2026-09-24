@@ -1,79 +1,32 @@
-import { randomUUID } from "node:crypto";
-import { access } from "node:fs/promises";
-import { resolve } from "node:path";
+/**
+ * The history-operation tools.
+ *
+ * The plans, the readiness checks and the apply-time rechecks all live in
+ * `src/core/operations.ts`, which the DSH bundle's own controls drive as well;
+ * this file is only the MCP surface over them — the tool names, schemas and
+ * descriptions a Codex session calls.
+ */
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { OperationPreview } from "../../shared/types.js";
-import { commitOid, failure, git, result, selectedWorktree } from "../git.js";
-import { getStatus } from "./status.js";
+import type { OperationPreview } from "../../core/types.js";
+import {
+  applyPlan as applyStoredPlan,
+  previewCherryPick as planCherryPick,
+  previewRebase as planRebase,
+} from "../../core/operations.js";
+import { failure, repoRoot, result } from "../git.js";
 
-const TTL_MS = 5 * 60_000;
-type Plan = OperationPreview & { repoPath?: string; issuedAt: number; base?: string };
-const plans = new Map<string, Plan>();
-
-async function exists(path: string): Promise<boolean> {
-  try { await access(path); return true; } catch { return false; }
-}
-
-async function requireReady(repoPath: string | undefined, worktreePath: string) {
-  const selected = await selectedWorktree(repoPath, worktreePath);
-  if (selected.bare || !selected.branch) throw new Error("A checked-out branch is required for this operation.");
-  if (selected.locked || selected.prunable) throw new Error("This worktree is not available for history operations.");
-  const status = await getStatus(repoPath, selected.path);
-  if (status.dirty) throw new Error("The worktree must be clean before a history operation.");
-  for (const marker of ["rebase-merge", "rebase-apply", "CHERRY_PICK_HEAD", "MERGE_HEAD", "REVERT_HEAD"]) {
-    const markerPath = (await git(selected.path, ["rev-parse", "--git-path", marker])).trim();
-    if (await exists(resolve(selected.path, markerPath))) throw new Error(`Git operation in progress (${marker}). Resolve it first.`);
-  }
-  return selected;
-}
-
-function storePlan(plan: Omit<Plan, "planId" | "issuedAt" | "expiresAt">): OperationPreview {
-  const now = Date.now();
-  for (const [id, old] of plans) if (now - old.issuedAt >= TTL_MS) plans.delete(id);
-  const saved: Plan = { ...plan, planId: randomUUID(), issuedAt: now, expiresAt: new Date(now + TTL_MS).toISOString() };
-  plans.set(saved.planId, saved);
-  const { repoPath: _repoPath, issuedAt: _issuedAt, base: _base, ...publicPlan } = saved;
-  return publicPlan;
-}
-
+/** Plan a rebase of the named worktree onto `target`. */
 export async function previewRebase(repoPath: string | undefined, worktreePath: string, target: string): Promise<OperationPreview> {
-  const worktree = await requireReady(repoPath, worktreePath);
-  const targetCommit = await commitOid(worktree.path, target);
-  const base = (await git(worktree.path, ["merge-base", worktree.head, targetCommit])).trim();
-  const commits = (await git(worktree.path, ["rev-list", "--reverse", `${targetCommit}..${worktree.head}`])).trim().split("\n").filter(Boolean);
-  const merges = (await git(worktree.path, ["rev-list", "--merges", `${base}..${worktree.head}`])).trim();
-  const warnings = ["Rebase rewrites commit IDs. Conflicts may require manual resolution."];
-  if (merges) warnings.push("This branch contains merge commits; default rebase may flatten them.");
-  if (!commits.length) warnings.push("No commits need replaying.");
-  return storePlan({ operation: "rebase", repoPath, worktreePath: worktree.path, branch: worktree.branch!, head: worktree.head, target, targetCommit, base, commits, warnings });
+  return planRebase(await repoRoot(repoPath), worktreePath, target);
 }
 
+/** Plan a cherry-pick of one non-merge commit into the named worktree. */
 export async function previewCherryPick(repoPath: string | undefined, worktreePath: string, commit: string): Promise<OperationPreview> {
-  const worktree = await requireReady(repoPath, worktreePath);
-  const targetCommit = await commitOid(worktree.path, commit);
-  const parents = (await git(worktree.path, ["rev-list", "--parents", "-n", "1", targetCommit])).trim().split(" ").slice(1);
-  if (parents.length > 1) throw new Error("Cherry-picking a merge commit requires a mainline; select a non-merge commit.");
-  return storePlan({ operation: "cherry-pick", repoPath, worktreePath: worktree.path, branch: worktree.branch!, head: worktree.head, target: commit, targetCommit, commits: [targetCommit], warnings: ["Cherry-pick creates a new commit. Conflicts may require manual resolution."] });
+  return planCherryPick(await repoRoot(repoPath), worktreePath, commit);
 }
 
-export async function applyPlan(operation: "rebase" | "cherry-pick", planId: string, confirm: boolean) {
-  if (!confirm) throw new Error("Set confirm=true after reviewing the preview.");
-  const plan = plans.get(planId);
-  if (!plan || plan.operation !== operation) throw new Error("Plan not found. Request a new preview.");
-  plans.delete(planId); // A plan can only be attempted once, including failures.
-  if (Date.now() - plan.issuedAt >= TTL_MS) throw new Error("Plan expired. Request a new preview.");
-  const worktree = await requireReady(plan.repoPath, plan.worktreePath);
-  if (worktree.head !== plan.head || worktree.branch !== plan.branch) throw new Error("The worktree changed since preview. Request a new preview.");
-  if (await commitOid(worktree.path, plan.target) !== plan.targetCommit) throw new Error("The target ref changed since preview. Request a new preview.");
-  const args = operation === "rebase" ? ["rebase", plan.targetCommit] : ["cherry-pick", plan.targetCommit];
-  try {
-    await git(worktree.path, args, 120_000);
-    return { applied: true, operation, worktreePath: worktree.path, head: await commitOid(worktree.path, "HEAD") };
-  } catch (error) {
-    throw new Error(`${error instanceof Error ? error.message : String(error)}\nGit may have stopped for conflicts in ${worktree.path}. Resolve them there with git ${operation === "rebase" ? "rebase" : "cherry-pick"} --continue or --abort.`);
-  }
-}
+export { applyStoredPlan as applyPlan };
 
 export function registerOperationTools(server: McpServer): void {
   server.registerTool("git_rebase_preview", {
@@ -92,7 +45,7 @@ export function registerOperationTools(server: McpServer): void {
     inputSchema: { planId: z.string().uuid(), confirm: z.literal(true) },
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false }
   }, async ({ planId, confirm }) => {
-    try { return result(await applyPlan("rebase", planId, confirm)); }
+    try { return result(await applyStoredPlan("rebase", planId, confirm)); }
     catch (error) { return failure(error); }
   });
 
@@ -112,7 +65,7 @@ export function registerOperationTools(server: McpServer): void {
     inputSchema: { planId: z.string().uuid(), confirm: z.literal(true) },
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false }
   }, async ({ planId, confirm }) => {
-    try { return result(await applyPlan("cherry-pick", planId, confirm)); }
+    try { return result(await applyStoredPlan("cherry-pick", planId, confirm)); }
     catch (error) { return failure(error); }
   });
 }

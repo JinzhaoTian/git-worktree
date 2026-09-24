@@ -1,61 +1,32 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { realpath } from "node:fs/promises";
+/**
+ * The MCP host's Git adapter.
+ *
+ * Every Git command runs through `src/core`, the same code the DSH bundle's host
+ * half uses, so the two front ends cannot disagree about what a repository says.
+ * What stays here is MCP policy: where an unaddressed repository path comes from
+ * (the tool argument, then `GIT_WORKTREE_REPO`, then the process directory) and
+ * the MCP result envelope.
+ */
 import { resolve } from "node:path";
+import {
+  assertRefName,
+  commitOid,
+  git,
+  repoRoot as coreRepoRoot,
+} from "../core/git.js";
+import { parseWorktrees, selectActiveWorktree } from "../core/worktrees.js";
 import type { Worktree } from "../shared/types.js";
 
-const execFileAsync = promisify(execFile);
-const READ_TIMEOUT = 20_000;
+export { assertRefName, commitOid, git, parseWorktrees };
 
-export async function git(cwd: string, args: string[], timeout = READ_TIMEOUT): Promise<string> {
-  try {
-    const env = { ...process.env };
-    for (const key of Object.keys(env)) if (key.startsWith("GIT_")) delete env[key];
-    env.GIT_TERMINAL_PROMPT = "0";
-    env.LC_ALL = "C";
-    const { stdout } = await execFileAsync("git", args, {
-      cwd, timeout, maxBuffer: 16 * 1024 * 1024,
-      encoding: "utf8", windowsHide: true,
-      env
-    });
-    return stdout;
-  } catch (error) {
-    const e = error as Error & { stderr?: string };
-    throw new Error((e.stderr || e.message).trim());
-  }
-}
-
+/** The repository path to read, before it is resolved. */
 export function repoInput(repoPath?: string): string {
   return resolve(repoPath || process.env.GIT_WORKTREE_REPO || process.cwd());
 }
 
+/** The Git root containing the requested path. */
 export async function repoRoot(repoPath?: string): Promise<string> {
-  const input = await realpath(repoInput(repoPath));
-  const root = (await git(input, ["rev-parse", "--show-toplevel"])).trim();
-  if (!root) throw new Error("The selected path is not a non-bare Git worktree.");
-  return realpath(root);
-}
-
-export function parseWorktrees(raw: string): Worktree[] {
-  return raw.split("\0\0").filter(Boolean).map((block) => {
-    const fields = block.split("\0").filter(Boolean);
-    const item: Worktree = { path: "", head: "", branch: null, bare: false, detached: false, locked: null, prunable: null };
-    for (const field of fields) {
-      const separator = field.indexOf(" ");
-      const key = separator < 0 ? field : field.slice(0, separator);
-      const value = separator < 0 ? "" : field.slice(separator + 1);
-      switch (key) {
-        case "worktree": item.path = value; break;
-        case "HEAD": item.head = value; break;
-        case "branch": item.branch = value.replace(/^refs\/heads\//, ""); break;
-        case "bare": item.bare = true; break;
-        case "detached": item.detached = true; break;
-        case "locked": item.locked = value || "locked"; break;
-        case "prunable": item.prunable = value || "prunable"; break;
-      }
-    }
-    return item;
-  }).filter((item) => item.path);
+  return coreRepoRoot(repoInput(repoPath));
 }
 
 export async function listWorktrees(repoPath?: string): Promise<{ root: string; worktrees: Worktree[] }> {
@@ -63,32 +34,23 @@ export async function listWorktrees(repoPath?: string): Promise<{ root: string; 
   return { root, worktrees: parseWorktrees(await git(root, ["worktree", "list", "--porcelain", "-z"])) };
 }
 
+/**
+ * The named worktree, refusing a path this repository does not hold.
+ *
+ * Unlike a graph read, a history operation may only act on an active,
+ * checked-out worktree, so this uses the strict selection and rejects bare or
+ * prunable entries before any command is built.
+ */
 export async function selectedWorktree(repoPath: string | undefined, worktreePath: string): Promise<Worktree> {
-  const { root, worktrees } = await listWorktrees(repoPath);
-  const selected = await realpath(resolve(root, worktreePath));
-  for (const worktree of worktrees) {
-    if (!worktree.bare && !worktree.prunable && await realpath(worktree.path) === selected) return worktree;
-  }
-  throw new Error("The path is not an active worktree in the selected repository.");
+  return selectActiveWorktree(await repoRoot(repoPath), worktreePath);
 }
 
-export function assertRefName(ref: string): void {
-  if (!ref || ref.startsWith("-") || /[\x00-\x20\x7f]/.test(ref) || ref.includes("..") || ref.includes("@{")) {
-    throw new Error("Invalid Git ref.");
-  }
-}
-
-export async function commitOid(cwd: string, ref: string): Promise<string> {
-  assertRefName(ref);
-  const oid = (await git(cwd, ["rev-parse", "--verify", `${ref}^{commit}`])).trim();
-  if (!/^[0-9a-f]{40,64}$/.test(oid)) throw new Error("Invalid commit ID returned by Git.");
-  return oid;
-}
-
+/** The MCP result envelope for a successful tool call. */
 export function result<T>(value: T) {
   return { structuredContent: value as Record<string, unknown>, content: [{ type: "text" as const, text: JSON.stringify(value) }] };
 }
 
+/** The MCP result envelope for a failed tool call, which the model reads as text. */
 export function failure(error: unknown) {
   return { isError: true, content: [{ type: "text" as const, text: error instanceof Error ? error.message : String(error) }] };
 }
