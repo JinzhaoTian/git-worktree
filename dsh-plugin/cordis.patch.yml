@@ -1,0 +1,6 @@
+- insert:
+    - id: git-worktree
+      name: '@local/dsh-git-worktree'
+      config:
+        defaultRepo: null
+        commitLimit: 120

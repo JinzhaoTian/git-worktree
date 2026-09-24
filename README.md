@@ -2,6 +2,18 @@
 
 Local MCP plugin for browsing Git worktrees and their commit ancestry. The graph UI is a React MCP App rendered through the host's JSON-RPC `postMessage` bridge. Right-click a commit to preview rebase or cherry-pick, then confirm an expiring one-use plan.
 
+## Two hosts
+
+Codex exposes no docked right-sidebar API, so the view here renders as an MCP App or, for a task tab, through a loopback HTTP server the user opens by URL. DSH exposes a real tab-type system, so the same idea ships as a native right-sidebar tab instead.
+
+| Route | Container | Status |
+| --- | --- | --- |
+| This root project | Codex MCP App, or a loopback browser tab | Working |
+| [`dsh-plugin/`](dsh-plugin/README.md) | DSH right-sidebar tab, with panes, floating, and Session restore | Read-only first version, not yet run |
+
+The DSH bundle owns Git in a Host half and renders the panel as a React component in the application, so it inherits the host theme and needs no separate server, port, or token.
+Start with [`dsh-plugin/README.md`](dsh-plugin/README.md).
+
 ## Files
 
 | Path | Purpose |
@@ -20,6 +32,7 @@ Local MCP plugin for browsing Git worktrees and their commit ancestry. The graph
 | `src/ui/index.tsx`, `src/ui/browser.tsx` | MCP App and browser-tab entrypoints |
 | `scripts/build.mjs`, `tsconfig.*.json` | Build configuration |
 | `skills/git-graph/SKILL.md` | Agent workflow |
+| `dsh-plugin/` | The DSH bundle: Host Git route plus the right-sidebar tab |
 
 ## Build and run
 

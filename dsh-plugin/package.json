@@ -1,0 +1,28 @@
+{
+  "name": "@local/dsh-git-worktree",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Git worktree browser as a native DSH right-sidebar tab.",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
+      ]
+    }
+  },
+  "meta": {
+    "title": "Git Worktree",
+    "description": "Browse this workspace's Git worktrees, branches and commit history in a right-sidebar tab."
+  }
+}
