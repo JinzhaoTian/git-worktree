@@ -87,6 +87,35 @@ if (!compactPath) {
   process.exit(1);
 }
 
+// The commit grid's own column template, straight out of the bundle's layout, so
+// the markup below is handed the `--dsh-gw-cols` the panel really writes. The
+// page under test is the ordinary state of a long history: its oldest commit's
+// parent has not been fetched yet, so one edge leaves the page.
+const GRID_WIDTHS = [260, 380, 520];
+const graphColumns = (() => {
+  const start = client.indexOf('function layoutLanes');
+  const end = client.indexOf('function strokeWidthFor');
+  if (start < 0 || end <= start) return null;
+  const row = Number(/const ROW = (\d+)/.exec(client)?.[1]);
+  const near = Number(/const CROSS_NEAR = (\d+)/.exec(client)?.[1]);
+  const far = Number(/const CROSS_FAR = ([^;]+);/.exec(client)?.[1].replace('ROW', row));
+  const layoutLanes = new Function('ROW', 'CROSS_NEAR', 'CROSS_FAR', `${client.slice(start, end)}; return layoutLanes;`)(row, near, far);
+  const pad = Number(/const PAD = (\d+)/.exec(client)?.[1]);
+  const column = Number(/const COL = (\d+)/.exec(client)?.[1]);
+  const margin = Number(/const MARGIN = (\d+)/.exec(client)?.[1]);
+  const layout = layoutLanes([
+    { id: 'p3', parents: ['p2'] },
+    { id: 'p2', parents: ['p1'] },
+    { id: 'p1', parents: ['p0'] },
+  ]);
+  return { track: Math.max(64, pad + layout.width * column + margin), layoutWidth: layout.width };
+})();
+if (!graphColumns) {
+  console.error('Could not read layoutLanes out of client.js.');
+  process.exit(1);
+}
+const gridCols = `${graphColumns.track}px minmax(0, 1fr)`;
+
 const PATHS = [
   ['reported', 'E:/www.p6c/ThBIMWindowsUI'],
   ['long-name', 'E:/workspace/ThBIMWindowsUI'],
@@ -120,6 +149,29 @@ for (const [label, path] of PATHS) {
   }
 }
 
+// One commit row and the header, exactly as the panel builds them: the graph
+// column's cell, then the description cell. A history is longer than one page, so
+// the header is the two columns a panel under 560px wide shows.
+const gridCell = (index) => `
+      <div class="dsh-gw-gcell"><svg width="${graphColumns.track}" height="26" aria-hidden="true">
+        <line x1="17" y1="0" x2="17" y2="26" stroke="#4a7dff" stroke-width="1.6"/>
+        <circle cx="17" cy="13" r="4.5" fill="#fff" stroke="#4a7dff" stroke-width="2"/></svg></div>
+      <div class="dsh-gw-cell"><div class="dsh-gw-subj"><span class="dsh-gw-subjtext">commit number ${index}</span></div></div>`;
+const gridRow = (index) => `
+    <div class="dsh-gw-row" style="--dsh-gw-cols: ${gridCols}" role="button" tabindex="0">
+      ${gridCell(index)}
+    </div>`;
+const grid = (width) => `
+  <section data-grid="${width}"><p>paged graph @ ${width}px</p>
+    <div class="frame" style="width:${width}px"><div class="dsh-gw"><div class="dsh-gw-scroll"><div class="dsh-gw-grid">
+      <div class="dsh-gw-hrow" style="--dsh-gw-cols: ${gridCols}">
+        <div class="dsh-gw-hcell">Graph</div><div class="dsh-gw-hcell">Description</div>
+      </div>
+      ${[0, 1, 2, 3, 4].map(gridRow).join('')}
+    </div></div></div></div>
+  </section>`;
+for (const width of GRID_WIDTHS) sections += grid(width);
+
 const tokenCss = Object.entries(HOST_TOKENS).map(([name, value]) => `${name}:${value};`).join('');
 const html = `<!doctype html><html><head><meta charset="utf-8"><style>
 :root{${tokenCss}}
@@ -148,6 +200,52 @@ window.__measure = () => Array.from(document.querySelectorAll('section[data-case
     dotInsideToolbar: dotBox.l >= barBox.l - 0.5 && dotBox.r <= barBox.r + 0.5,
     dotPainted: getComputedStyle(dot).backgroundColor !== 'rgba(0, 0, 0, 0)',
     textEllipsised: text.scrollWidth > text.clientWidth,
+  };
+});
+// The commit grid: a cell that wrapped onto a grid row of its own lands outside
+// the 26px band its row clips to, so a description is measured where it is drawn,
+// not by the width it would have had.
+window.__measureGrid = () => Array.from(document.querySelectorAll('section[data-grid]')).map((section) => {
+  const box = (el) => { const b = el.getBoundingClientRect(); return { t: +b.top.toFixed(1), b: +b.bottom.toFixed(1), l: +b.left.toFixed(1), r: +b.right.toFixed(1), w: +b.width.toFixed(1) }; };
+  // Cells laid out on one line run left to right; a cell that wrapped onto a grid
+  // row of its own starts back at the container's own left edge instead.
+  const beside = (el) => {
+    const cells = Array.from(el.children).map(box);
+    return cells.length > 1 && cells.every((cell, index) => cell.w > 0 && (index === 0 || cell.l >= cells[index - 1].r - 0.5));
+  };
+  // Cells of different heights sit centred in one band, so they share a row when
+  // each one's middle is inside that band — not when their tops are equal.
+  const banded = (el) => {
+    const band = box(el);
+    const cells = Array.from(el.children).map(box);
+    return cells.length > 1 && cells.every((cell) => {
+      const middle = (cell.t + cell.b) / 2;
+      return cell.w > 0 && middle >= band.t - 0.5 && middle <= band.b + 0.5;
+    });
+  };
+  const header = section.querySelector('.dsh-gw-hrow');
+  const rows = Array.from(section.querySelectorAll('.dsh-gw-row'));
+  return {
+    case: 'paged-' + section.dataset.grid,
+    headerTracks: getComputedStyle(header).gridTemplateColumns.split(' ').length,
+    headerValue: getComputedStyle(header).gridTemplateColumns,
+    headerBeside: beside(header),
+    cells: header.children.length,
+    rows: rows.map((row) => {
+      const rowBox = box(row);
+      const desc = row.querySelector('.dsh-gw-cell');
+      const text = row.querySelector('.dsh-gw-subjtext');
+      const descBox = desc ? box(desc) : null;
+      const textBox = text ? box(text) : null;
+      return {
+        beside: beside(row),
+        banded: banded(row),
+        descInsideRow: descBox !== null && descBox.t >= rowBox.t - 0.5 && descBox.b <= rowBox.b + 0.5,
+        textInsideRow: textBox !== null && textBox.w > 0 && textBox.t >= rowBox.t - 0.5 && textBox.b <= rowBox.b + 0.5,
+        textWidth: textBox ? textBox.w : 0,
+        subject: text ? text.textContent : '',
+      };
+    }),
   };
 });
 </script></body></html>`;
@@ -240,6 +338,42 @@ try {
     rows.some((row) => row.textEllipsised && row.case.startsWith('over-long')),
     'the over-long path is ellipsised inside the chip',
   );
+
+  // A graph whose history does not fit one page is the case that used to render
+  // as a stack of empty stripes: the page's last edge ends on a lane with no row
+  // of its own, a lane left undefined there made the column width NaN, and CSS
+  // dropped the whole `grid-template-columns` declaration. Every cell of every row
+  // then wrapped onto a row of its own and the fixed 26px band clipped all of them
+  // but the graph — the descriptions were drawn, just never inside their row.
+  const grids = JSON.parse((await send('Runtime.evaluate', {
+    expression: 'JSON.stringify(window.__measureGrid())', returnByValue: true,
+  })).result.value);
+  for (const section of grids) {
+    const row = section.rows[0];
+    const laid = (entry) => entry.beside && entry.banded && entry.descInsideRow && entry.textInsideRow;
+    const verdict = section.headerTracks === section.cells && section.headerBeside
+      && section.rows.every(laid)
+      ? 'ok  '
+      : 'FAIL';
+    console.log(`  ${verdict} ${section.case.padEnd(16)} tracks=${section.headerTracks} template=${JSON.stringify(section.headerValue)} desc=${row.textWidth} ${JSON.stringify(row.subject)} (layout width ${graphColumns.layoutWidth})`);
+  }
+  check(grids.length === GRID_WIDTHS.length, `every paged grid width was measured (${grids.length} cases)`);
+  check(
+    grids.every((section) => section.headerTracks === section.cells),
+    'the paged grid keeps one column per cell, so nothing wraps onto a row of its own',
+  );
+  check(
+    grids.every((section) => section.headerBeside),
+    'the Graph and Description headers sit side by side in a paged grid',
+  );
+  check(
+    grids.every((section) => section.rows.every((row) => row.beside && row.descInsideRow)),
+    'every row of a paged grid draws its description beside the graph, inside its own band',
+  );
+  check(
+    grids.every((section) => section.rows.every((row) => row.banded && row.textInsideRow && row.textWidth > 20)),
+    'every commit subject of a paged grid is drawn and readable, not clipped away',
+  );
 } finally {
   socket.close();
   // The browser's own profile holds lock files while it exits, so the cleanup
@@ -256,4 +390,4 @@ if (failures.length > 0) {
   for (const failure of failures) console.error(`  FAIL ${failure}`);
   process.exit(1);
 }
-console.log('\nToolbar geometry holds at every measured width.');
+console.log('\nToolbar geometry holds at every measured width, and a paged commit grid lays its cells out in columns.');

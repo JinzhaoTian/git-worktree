@@ -338,6 +338,13 @@ window.__ModuleLoader__.load({
         seats.push(seat);
       }
       const indexById = new Map(nodes.map((node, index) => [node.id, index]));
+      // Where the walk left every branch running once the last row was placed. An
+      // edge whose parent is not on this page has no row to read a column from, so
+      // it ends in the column that parent was still waiting in — which the seats
+      // of the last row carry. Reading it from anywhere else leaves `toLane`
+      // undefined, and one undefined lane turns the whole column width into NaN,
+      // which the panel then hands to CSS as an invalid grid.
+      const lastSeats = seats.length > 0 ? seats[seats.length - 1] : null;
       for (const edge of edges) {
         // A parent outside this page continues just below the last visible row.
         // Parents inside the page connect to their real row, which is essential
@@ -358,11 +365,22 @@ window.__ModuleLoader__.load({
         // ends of an edge are read from where its rows were finally drawn. The
         // page's last row keeps the column the walk left the parent waiting in.
         edge.fromLane = lanes[edge.from];
-        edge.toLane = edge.to < lanes.length ? lanes[edge.to] : edge.toLane;
+        edge.toLane = edge.to < lanes.length
+          ? lanes[edge.to]
+          : (lastSeats ? lastSeats.get(edge.parent) : undefined) ?? edge.fromLane;
       }
       let width = 0;
       for (const lane of lanes) width = Math.max(width, lane + 1);
-      for (const edge of edges) width = Math.max(width, edge.fromLane + 1, edge.toLane + 1);
+      for (const edge of edges) {
+        // Every lane is an integer by here: one that came back undefined would
+        // turn this maximum into NaN, and the graph column's width into an
+        // invalid `grid-template-columns` the panel cannot lay out — which fails
+        // as a silent stack of one-cell rows rather than as anything readable.
+        if (!Number.isInteger(edge.fromLane) || !Number.isInteger(edge.toLane)) {
+          throw new Error(`dsh-git-worktree: lane layout left edge ${edge.from}→${edge.parent} without a column`);
+        }
+        width = Math.max(width, edge.fromLane + 1, edge.toLane + 1);
+      }
       // Every lane change leaves its node and crosses in the row below it, taking
       // the two slots that row has clear of its own node in turn. A merge's two
       // crossings then sit on different lines instead of one drawn over the other.

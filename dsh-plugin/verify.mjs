@@ -1332,6 +1332,11 @@ let sandbox;
   const rowHeight = Number(/const ROW = (\d+)/.exec(source)?.[1]);
   const near = Number(/const CROSS_NEAR = (\d+)/.exec(source)?.[1]);
   const far = Number(/const CROSS_FAR = ([^;]+);/.exec(source)?.[1].replace('ROW', rowHeight));
+  // The graph column's own geometry, so the width a layout produces can be turned
+  // into the CSS track the panel actually hands the grid.
+  const pad = Number(/const PAD = (\d+)/.exec(source)?.[1]);
+  const column = Number(/const COL = (\d+)/.exec(source)?.[1]);
+  const margin = Number(/const MARGIN = (\d+)/.exec(source)?.[1]);
   const layoutLanes = start >= 0 && end > start
     ? new Function('ROW', 'CROSS_NEAR', 'CROSS_FAR', `${source.slice(start, end)}; return layoutLanes;`)(rowHeight, near, far)
     : null;
@@ -1387,6 +1392,34 @@ let sandbox;
         return Math.abs(step.lane - previous) <= 1;
       }) && Math.abs(slideEdge.toLane - (slideEdge.route[slideEdge.route.length - 1] || { lane: slideEdge.fromLane }).lane) <= 1,
       `a slide is taken one column at a time (${(slideEdge?.route || []).map((step) => step.lane).join(' -> ') || 'none'})`,
+    );
+    // A page whose oldest parent is not loaded yet is the ordinary state of a long
+    // history: every page but the last one ends that way. That edge has no row to
+    // read a column from, and a lane left undefined there once made `width` NaN.
+    // The panel then handed CSS a `NaNpx` track, which invalidates the whole
+    // `grid-template-columns` declaration, so every cell of every row wrapped onto
+    // a row of its own and the fixed 26px row clipped all of them but the graph.
+    const paged = layoutLanes([
+      { id: 'p3', parents: ['p2'] },
+      { id: 'p2', parents: ['p1'] },
+      { id: 'p1', parents: ['p0'] },
+    ]);
+    check(
+      Number.isInteger(paged.width) && paged.width > 0,
+      `a page whose parent is not loaded still measures its lanes (width ${paged.width})`,
+    );
+    check(
+      paged.edges.every((edge) => Number.isInteger(edge.fromLane) && Number.isInteger(edge.toLane)),
+      'an edge that leaves the page ends in a real column instead of in undefined',
+    );
+    check(
+      paged.edges.find((edge) => edge.parent === 'p0')?.toLane === 0,
+      'an edge that leaves the page ends in the column the walk left its parent waiting in',
+    );
+    const pagedWidth = Math.max(64, pad + paged.width * column + margin);
+    check(
+      /^\d+px minmax\(0, 1fr\)$/.test(`${pagedWidth}px minmax(0, 1fr)`),
+      `the graph column width a paged graph produces is a usable CSS track (${pagedWidth}px)`,
     );
   }
 }
