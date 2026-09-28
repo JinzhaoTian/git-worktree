@@ -11,13 +11,13 @@ import { build } from 'esbuild';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
-const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const integration = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 // The host half: an ES module the DSH Loader imports, with every payload
 // function exported so the pre-install check can drive them directly.
 await build({
-  entryPoints: [resolve(root, 'src/dsh/host.ts')],
-  outfile: resolve(root, 'dsh-plugin/index.js'),
+  entryPoints: [resolve(integration, 'src/host.ts')],
+  outfile: resolve(integration, 'index.js'),
   bundle: true,
   format: 'esm',
   platform: 'node',
@@ -30,8 +30,8 @@ await build({
 // external and is resolved through the loader's own module table — the host
 // renders this component, so a second copy of React would break its hooks.
 await build({
-  entryPoints: [resolve(root, 'src/dsh/client.ts')],
-  outfile: resolve(root, 'dsh-plugin/client.js'),
+  entryPoints: [resolve(integration, 'src/client.ts')],
+  outfile: resolve(integration, 'client.js'),
   bundle: true,
   format: 'cjs',
   platform: 'browser',

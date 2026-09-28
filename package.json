@@ -1,15 +1,16 @@
 {
-  "name": "dsh-git-worktree-dev",
+  "name": "git-worktree-integrations",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node scripts/build-dsh.mjs",
-    "typecheck": "tsc -p tsconfig.dsh.json && tsc -p tsconfig.view.json",
-    "test": "npm run verify",
-    "geometry": "node scripts/geometry-dsh.mjs",
-    "verify": "node scripts/verify-dsh.mjs",
-    "check": "npm run build && npm run typecheck && npm test && npm run geometry"
+    "build:dsh": "node integrations/dsh-plugin/scripts/build-dsh.mjs",
+    "typecheck:dsh": "tsc -p tsconfig.view.json && tsc -p integrations/dsh-plugin/tsconfig.host.json && tsc -p integrations/dsh-plugin/tsconfig.client.json",
+    "verify:dsh": "node integrations/dsh-plugin/scripts/verify-dsh.mjs",
+    "geometry:dsh": "node integrations/dsh-plugin/scripts/geometry-dsh.mjs",
+    "test": "npm run verify:dsh",
+    "check:dsh": "npm run build:dsh && npm run typecheck:dsh && npm run verify:dsh && npm run geometry:dsh",
+    "check": "npm run build:dsh && npm run typecheck:dsh && npm test && npm run geometry:dsh"
   },
   "dependencies": {
     "react": "^19.2.0"

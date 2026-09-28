@@ -4,12 +4,11 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "strict": true,
+    "noImplicitAny": false,
     "noEmit": true,
     "skipLibCheck": true,
-    "noUnusedLocals": true,
-    "noUnusedParameters": true,
     "types": ["node"],
-    "lib": ["ES2022"]
+    "lib": ["ES2022", "DOM"]
   },
-  "include": ["src/core/**/*.ts", "src/dsh/host.ts"]
+  "include": ["../../src/ui/worktree.ts", "src/client.ts"]
 }

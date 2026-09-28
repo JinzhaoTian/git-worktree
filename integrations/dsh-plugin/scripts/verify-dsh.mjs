@@ -1,7 +1,7 @@
 /**
  * Pre-install checks for the DSH Git Worktree bundle.
  *
- * Run with:  node scripts/verify-dsh.mjs
+ * Run with:  node integrations/dsh-plugin/scripts/verify-dsh.mjs
  *
  * It parses both plugin halves, checks the manifest and patch the installer
  * reads, and confirms every file the manifest points at exists. It never
@@ -15,8 +15,8 @@ import { spawnSync } from 'node:child_process';
 import vm from 'node:vm';
 
 const here = dirname(fileURLToPath(import.meta.url));
-/** The bundle directory these checks read: the scripts live beside it, not in it. */
-const pluginDir = resolve(here, '..', 'dsh-plugin');
+/** The bundle directory these checks read: the scripts live within it. */
+const pluginDir = resolve(here, '..');
 const failures = [];
 const notes = [];
 
@@ -53,16 +53,15 @@ async function checkSyntax(relative) {
   return source;
 }
 
-// Both halves are build output and are not committed, so a check run against a
-// fresh clone has nothing to read. Say that once, with the command that fixes
-// it, instead of failing inside the first readFile.
+// Both halves are committed build artifacts. If either is absent, give a
+// specific recovery command instead of failing inside the first readFile.
 for (const artifact of ['index.js', 'client.js']) {
   try {
     await access(join(pluginDir, artifact));
   } catch {
     console.error(
-      `dsh-plugin/${artifact} is missing: it is build output and is not committed.\n`
-      + 'Run "npm run build" first, then this check again.',
+      `integrations/dsh-plugin/${artifact} is missing: the checked-in bundle is incomplete.\n`
+      + 'Run "npm run build:dsh" to regenerate it, then this check again.',
     );
     process.exit(1);
   }
@@ -123,6 +122,15 @@ const asBuilt = (text) => text
 
 const client = asBuilt(await readFile(join(pluginDir, 'client.js'), 'utf8'));
 check(client.includes('__ModuleLoader__.load'), 'browser half registers a client module');
+const sharedCss = /const CSS = `([\s\S]*?)`;/.exec(client)?.[1] ?? '';
+const themeCss = /const DSH_THEME_CSS = `([\s\S]*?)`;/.exec(client)?.[1] ?? '';
+check(Boolean(sharedCss) && !sharedCss.includes('--dsw-'), 'shared view CSS uses platform-independent theme variables');
+check(themeCss.includes('--gw-label-primary: var(--dsw-alias-label-primary)')
+  && themeCss.includes('--gw-bg-base: var(--dsw-alias-bg-base)')
+  && themeCss.includes('--gw-sidebar-fill: var(--dsw-specific-sidebar-fill)'),
+'DSH adapter maps host theme tokens to the shared view');
+check(client.includes("createElement('style', null, DSH_THEME_CSS)"),
+  'DSH tab mounts its theme mapping');
 check(client.includes('ctx.sidebarRightTabs.register'), 'browser half registers a tab type');
 check(client.includes("'sidebar.right.pane.tab'"), 'browser half registers the tab body');
 check(client.includes("'sidebar.right.pane.tab.title'"), 'browser half registers the tab title');
@@ -335,11 +343,11 @@ check(
 {
   const openRowRule = /\.dsh-gw-row-open \{[^}]*\}/.exec(client)?.[0] ?? '';
   check(
-    /background: color-mix\(in srgb, var\(--dsw-alias-label-primary\)/.test(openRowRule),
+    /background: color-mix\(in srgb, var\(--gw-label-primary\)/.test(openRowRule),
     'an open row is tinted from a theme token, so it marks itself in either theme',
   );
   check(
-    /border-left-color: var\(--dsw-alias-brand-primary\)/.test(openRowRule),
+    /border-left-color: var\(--gw-brand-primary\)/.test(openRowRule),
     'an open row keeps the brand stripe that points at its detail',
   );
   check(
@@ -347,7 +355,7 @@ check(
     'hovering an open row does not wash its tint out',
   );
   const detailRowRule = /\.dsh-gw-detailrow \{[^}]*\}/.exec(client)?.[0] ?? '';
-  const mixPercent = (rule) => Number(/var\(--dsw-alias-label-primary\) (\d+(?:\.\d+)?)%/.exec(rule)?.[1]);
+  const mixPercent = (rule) => Number(/var\(--gw-label-primary\) (\d+(?:\.\d+)?)%/.exec(rule)?.[1]);
   const detailMix = mixPercent(detailRowRule);
   check(
     Number.isFinite(detailMix) && detailMix > 0,
@@ -500,7 +508,7 @@ check(/\[repo, selected, scope, remoteParam, reloadKey\]/.test(client), 'togglin
 check(!client.includes('function WorktreeRefIcon'), 'worktree refs render without a stacked-folder glyph');
 check(!client.includes('dsh-gw-worktree-icon'), 'no leftover stacked-folder glyph styling');
 check(
-  client.includes('background: var(--dsw-alias-label-primary); color: var(--dsw-alias-bg-base);'),
+  client.includes('background: var(--gw-label-primary); color: var(--gw-bg-base);'),
   'the worktree cell inverts the label color (black on light, white on dark)',
 );
 check(
@@ -514,7 +522,7 @@ check(
   const chipRule = /\.dsh-gw-ref-worktree \{[^}]*\}/.exec(client)?.[0] ?? '';
   check(/gap: 0/.test(chipRule) && /padding: 0/.test(chipRule), 'the two cells sit flush as one chip');
   check(
-    /border: 1px solid var\(--dsw-alias-label-primary\)/.test(chipRule),
+    /border: 1px solid var\(--gw-label-primary\)/.test(chipRule),
     'the chip frames both cells in the label colour (black on light, white on dark)',
   );
   check(
@@ -527,7 +535,7 @@ check(
   );
   const labelRule = /\.dsh-gw-ref-worktree-label \{[^}]*\}/.exec(client)?.[0] ?? '';
   check(
-    /background: var\(--dsw-alias-label-primary\)/.test(labelRule),
+    /background: var\(--gw-label-primary\)/.test(labelRule),
     'the worktree cell carries the inverted fill',
   );
   check(!/border/.test(labelRule), 'the worktree cell draws no border of its own');
@@ -870,9 +878,9 @@ let sandbox;
       return element.props ? findElement(element.props.children, match) : null;
     };
     const isRing = (elementProps, type) => type === 'circle' && elementProps.r === 4.5
-      && elementProps.fill === 'var(--dsw-alias-bg-base)';
+      && elementProps.fill === 'var(--gw-bg-base)';
     const isConnector = (elementProps, type) => type === 'line'
-      && elementProps.stroke === 'var(--dsw-alias-label-secondary)';
+      && elementProps.stroke === 'var(--gw-label-secondary)';
     const rowWithHeadClass = (element) => findElement(
       element,
       (elementProps) => typeof elementProps.className === 'string' && elementProps.className.includes('dsh-gw-row-head'),
@@ -928,8 +936,8 @@ let sandbox;
         branch: 'main', path: 'C:/repo', unborn: false,
         summary: { changed: 2, insertions: 5, deletions: 1 },
         files: [
-          { path: 'dsh-plugin/client.js', add: 3, del: 1, untracked: false },
-          { path: 'dsh-plugin/notes/todo.md', add: 2, del: 0, untracked: true },
+          { path: 'integrations/dsh-plugin/client.js', add: 3, del: 1, untracked: false },
+          { path: 'integrations/dsh-plugin/notes/todo.md', add: 2, del: 0, untracked: true },
         ],
       },
     };
@@ -981,7 +989,7 @@ let sandbox;
     const connectorLine = railLinesOf(railRow)[0];
     check(
       Boolean(connectorLine) && near(leftOf(connectorLine), 16.2)
-        && connectorLine.props.style.background === 'var(--dsw-alias-label-secondary)',
+        && connectorLine.props.style.background === 'var(--gw-label-secondary)',
       'the working-tree connector crosses the band its own detail occupies',
     );
     // The open row is the surface the tint is painted on, so the class has to be

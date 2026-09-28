@@ -1,13 +1,14 @@
 /**
- * Git Worktree — the DSH right-sidebar view.
+ * Git Worktree — the shared view.
  *
  * Renders the worktree list, the multi-lane commit graph, the working tree's
  * own row and an expanded commit's details.
  *
- * `configureView` installs the DSH same-origin HTTP reader. Every read arrives
- * as the payload contract in `src/core/types.ts`.
+ * `configureView` installs a platform transport. Every read arrives as the
+ * payload contract in `src/core/types.ts`. The host maps the `--gw-*` theme
+ * variables to its own colors.
  *
- * The DSH bundle checks its render tree and geometry, so this file stays
+ * The DSH integration checks its render tree and geometry, so this file stays
  * `h(...)`-based and keeps its stylesheet compatible with those checks.
  */
 import * as React from 'react';
@@ -26,7 +27,7 @@ import type {
 
 // `React.createElement`, kept permissive on purpose: the render tree below is a
 // transcription of hand-written element calls, and the types this view earns its
-// keep from are the payloads, the panel state and the DSH transport — not
+// keep from are the payloads, the panel state and the transport — not
 // each leaf element's attribute list.
 const h = React.createElement as (type: any, props?: any, ...children: any[]) => any;
 
@@ -52,8 +53,7 @@ const W_DETAIL_SPLIT = 680;
 const DETAIL_MAX_SHARE = 0.45;
 const DETAIL_MAX_CEILING = 420;
 const DETAIL_MAX_FLOOR = ROW * 6;
-// The panel's first read can arrive before the Host knows this Session — a
-// restart restores the tab before it restores the Session — so it is retried
+// The panel's first read can arrive before a host restores its session — so it is retried
 // with a growing pause before the failure is believed.
 const RESOLVE_ATTEMPTS = 4;
 const RESOLVE_BACKOFF_MS = 300;
@@ -68,17 +68,17 @@ const DIFF_DEL = '#d05a4e';
 const viewState = new Map();
 
     const CSS = `
-.dsh-gw { display: flex; flex-direction: column; height: 100%; min-height: 0; font-size: 12px; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-base); }
+.dsh-gw { display: flex; flex-direction: column; height: 100%; min-height: 0; font-size: 12px; color: var(--gw-label-primary); background: var(--gw-bg-base); }
 .dsh-gw * { box-sizing: border-box; }
-.dsh-gw-btn { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; gap: 4px; height: 24px; padding: 0 8px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 6px; background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-primary); font: inherit; cursor: pointer; }
-.dsh-gw-btn:hover:not(:disabled) { background: var(--dsw-alias-bg-layer-2); }
+.dsh-gw-btn { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; gap: 4px; height: 24px; padding: 0 8px; border: 1px solid var(--gw-border-l2); border-radius: 6px; background: var(--gw-bg-layer-1); color: var(--gw-label-primary); font: inherit; cursor: pointer; }
+.dsh-gw-btn:hover:not(:disabled) { background: var(--gw-bg-layer-2); }
 .dsh-gw-btn:disabled { opacity: .5; cursor: default; }
-.dsh-gw-tbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; row-gap: 4px; min-height: 36px; padding: 5px 8px; border-bottom: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-specific-sidebar-fill); }
+.dsh-gw-tbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; row-gap: 4px; min-height: 36px; padding: 5px 8px; border-bottom: 1px solid var(--gw-border-l1); background: var(--gw-sidebar-fill); }
 .dsh-gw-spacer { flex: 1 1 auto; min-width: 4px; }
-.dsh-gw-check { display: inline-flex; align-items: center; gap: 5px; color: var(--dsw-alias-label-primary); cursor: pointer; white-space: nowrap; }
+.dsh-gw-check { display: inline-flex; align-items: center; gap: 5px; color: var(--gw-label-primary); cursor: pointer; white-space: nowrap; }
 .dsh-gw-icons { display: inline-flex; align-items: center; gap: 2px; }
-.dsh-gw-iconbtn { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border: 0; border-radius: 6px; background: none; color: var(--dsw-alias-label-secondary); cursor: pointer; }
-.dsh-gw-iconbtn:hover { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); }
+.dsh-gw-iconbtn { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border: 0; border-radius: 6px; background: none; color: var(--gw-label-secondary); cursor: pointer; }
+.dsh-gw-iconbtn:hover { background: var(--gw-bg-layer-2); color: var(--gw-label-primary); }
 /* The worktree chip rides in the toolbar, so it has to give up width to the
    controls beside it and ellipsise the path rather than push them around. Both
    the chip and the text inside it need a zero minimum for that to happen, and
@@ -87,67 +87,67 @@ const viewState = new Map();
    would push its own status dot and the folder name out of the toolbar instead
    of cutting the text. The dot stays outside that cut — it is drawn before the
    text and never shrinks — so the state keeps its colour whatever the path is. */
-.dsh-gw-wt { display: inline-flex; align-items: center; gap: 4px; flex: 0 1 auto; min-width: 0; max-width: 100%; overflow: hidden; height: 20px; padding: 0 7px; border: 1px solid var(--dsw-alias-border-l1); border-radius: 999px; background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-secondary); font: inherit; }
+.dsh-gw-wt { display: inline-flex; align-items: center; gap: 4px; flex: 0 1 auto; min-width: 0; max-width: 100%; overflow: hidden; height: 20px; padding: 0 7px; border: 1px solid var(--gw-border-l1); border-radius: 999px; background: var(--gw-bg-layer-1); color: var(--gw-label-secondary); font: inherit; }
 .dsh-gw-wt .dsh-gw-subjtext { min-width: 0; overflow: hidden; }
-.dsh-gw-wt-current { background: var(--dsw-alias-brand-primary); border-color: var(--dsw-alias-brand-primary); color: var(--dsw-alias-bg-base); }
-.dsh-gw-dot { flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: var(--dsw-alias-state-warn-primary); }
-.dsh-gw-dot-clean { background: var(--dsw-alias-state-success-primary); }
-.dsh-gw-dot-unknown { background: var(--dsw-alias-state-error-primary); }
-.dsh-gw-msg { padding: 5px 10px; color: var(--dsw-alias-label-secondary); border-bottom: 1px solid var(--dsw-alias-border-l1); }
-.dsh-gw-error { margin: 8px 10px; padding: 6px 8px; border: 1px solid var(--dsw-alias-state-error-primary); border-radius: 6px; color: var(--dsw-alias-state-error-primary); white-space: pre-wrap; word-break: break-word; }
-.dsh-gw-empty { padding: 16px 10px; color: var(--dsw-alias-label-secondary); text-align: center; }
+.dsh-gw-wt-current { background: var(--gw-brand-primary); border-color: var(--gw-brand-primary); color: var(--gw-bg-base); }
+.dsh-gw-dot { flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: var(--gw-state-warn); }
+.dsh-gw-dot-clean { background: var(--gw-state-success); }
+.dsh-gw-dot-unknown { background: var(--gw-state-error); }
+.dsh-gw-msg { padding: 5px 10px; color: var(--gw-label-secondary); border-bottom: 1px solid var(--gw-border-l1); }
+.dsh-gw-error { margin: 8px 10px; padding: 6px 8px; border: 1px solid var(--gw-state-error); border-radius: 6px; color: var(--gw-state-error); white-space: pre-wrap; word-break: break-word; }
+.dsh-gw-empty { padding: 16px 10px; color: var(--gw-label-secondary); text-align: center; }
 
 .dsh-gw-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; }
 .dsh-gw-grid { display: flex; flex-direction: column; min-width: 100%; }
-.dsh-gw-hrow { position: sticky; top: 0; z-index: 2; display: grid; grid-template-columns: var(--dsh-gw-cols); align-items: center; height: 26px; background: var(--dsw-alias-bg-layer-1); border-bottom: 1px solid var(--dsw-alias-border-l1); color: var(--dsw-alias-label-secondary); font-weight: 600; }
+.dsh-gw-hrow { position: sticky; top: 0; z-index: 2; display: grid; grid-template-columns: var(--dsh-gw-cols); align-items: center; height: 26px; background: var(--gw-bg-layer-1); border-bottom: 1px solid var(--gw-border-l1); color: var(--gw-label-secondary); font-weight: 600; }
 .dsh-gw-hcell { padding: 0 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The lane is drawn as one ROW-tall slice per row, so a row's pitch has to be
    exactly ROW and every slice has to begin at its row's top. A bottom border
    and an inline SVG's baseline gap each add height the drawing knows nothing
    about, and that is what left the lane visibly broken between rows. The
    separator is an inset shadow so it costs no layout. */
-.dsh-gw-row { display: grid; grid-template-columns: var(--dsh-gw-cols); align-items: center; height: 26px; overflow: hidden; border-left: 2px solid transparent; box-shadow: inset 0 -1px 0 var(--dsw-specific-sidebar-fill); cursor: pointer; outline: none; }
+.dsh-gw-row { display: grid; grid-template-columns: var(--dsh-gw-cols); align-items: center; height: 26px; overflow: hidden; border-left: 2px solid transparent; box-shadow: inset 0 -1px 0 var(--gw-sidebar-fill); cursor: pointer; outline: none; }
 /* The layer token is the same white the panel already sits on in the light
    theme, so an open row was marked by its left stripe alone and hovering one
    showed nothing at all. Mixing the label colour into the layer tints darker on
    the light theme and lighter on the dark one — the two directions "selected"
    reads as — and stays on theme tokens instead of a fixed grey. */
-.dsh-gw-row:hover:not(.dsh-gw-row-open) { background: color-mix(in srgb, var(--dsw-alias-label-primary) 3%, var(--dsw-alias-bg-layer-1)); }
-.dsh-gw-row:focus-visible { box-shadow: inset 0 0 0 1px var(--dsw-alias-brand-primary), inset 0 -1px 0 var(--dsw-specific-sidebar-fill); }
-.dsh-gw-row-open { background: color-mix(in srgb, var(--dsw-alias-label-primary) 6%, var(--dsw-alias-bg-layer-1)); border-left-color: var(--dsw-alias-brand-primary); }
+.dsh-gw-row:hover:not(.dsh-gw-row-open) { background: color-mix(in srgb, var(--gw-label-primary) 3%, var(--gw-bg-layer-1)); }
+.dsh-gw-row:focus-visible { box-shadow: inset 0 0 0 1px var(--gw-brand-primary), inset 0 -1px 0 var(--gw-sidebar-fill); }
+.dsh-gw-row-open { background: color-mix(in srgb, var(--gw-label-primary) 6%, var(--gw-bg-layer-1)); border-left-color: var(--gw-brand-primary); }
 .dsh-gw-cell { display: flex; align-items: center; min-width: 0; padding: 0 8px; }
-.dsh-gw-cell-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--dsw-alias-label-secondary); }
-.dsh-gw-cell-sec { color: var(--dsw-alias-label-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dsh-gw-cell-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--gw-label-secondary); }
+.dsh-gw-cell-sec { color: var(--gw-label-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dsh-gw-gcell { display: flex; align-self: stretch; overflow: hidden; }
 .dsh-gw-gcell svg { display: block; flex: 0 0 auto; }
 .dsh-gw-subj { display: flex; align-items: center; gap: 6px; min-width: 0; width: 100%; }
 .dsh-gw-subjtext { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dsh-gw-ref { flex: 0 0 auto; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 5px; border-radius: 4px; font-size: 11px; line-height: 16px; border: 1px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-secondary); }
+.dsh-gw-ref { flex: 0 0 auto; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 5px; border-radius: 4px; font-size: 11px; line-height: 16px; border: 1px solid var(--gw-border-l2); background: var(--gw-bg-layer-2); color: var(--gw-label-secondary); }
 /* A branch chip is the lane's own: tile, border, tint and now the name all come
    from the lane colour, so one branch reads as one colour rather than as green
    chrome around black text. */
-.dsh-gw-ref-branch, .dsh-gw-ref-remote { display: inline-flex; align-items: center; gap: 4px; padding: 0 5px 0 0; border-color: color-mix(in srgb, var(--dsh-gw-ref-color) 42%, var(--dsw-alias-border-l2)); background: color-mix(in srgb, var(--dsh-gw-ref-color) 8%, var(--dsw-alias-bg-layer-2)); color: var(--dsh-gw-ref-color); }
+.dsh-gw-ref-branch, .dsh-gw-ref-remote { display: inline-flex; align-items: center; gap: 4px; padding: 0 5px 0 0; border-color: color-mix(in srgb, var(--dsh-gw-ref-color) 42%, var(--gw-border-l2)); background: color-mix(in srgb, var(--dsh-gw-ref-color) 8%, var(--gw-bg-layer-2)); color: var(--dsh-gw-ref-color); }
 .dsh-gw-ref-remote { border-style: dashed; }
 .dsh-gw-ref-icon { display: inline-flex; align-items: center; justify-content: center; align-self: stretch; width: 18px; min-width: 18px; min-height: 16px; border-radius: 3px 0 0 3px; background: var(--dsh-gw-ref-color); color: white; }
 .dsh-gw-ref-icon svg { display: block; }
 .dsh-gw-ref-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.dsh-gw-ref-remote-name { color: var(--dsw-alias-label-secondary); font-style: italic; }
-.dsh-gw-ref-current { border-color: color-mix(in srgb, var(--dsh-gw-ref-color) 68%, var(--dsw-alias-border-l2)); font-weight: 600; }
-.dsh-gw-ref-tag { color: var(--dsw-alias-state-success-primary); }
-.dsh-gw-ref-stash { color: var(--dsw-alias-state-warn-primary); }
+.dsh-gw-ref-remote-name { color: var(--gw-label-secondary); font-style: italic; }
+.dsh-gw-ref-current { border-color: color-mix(in srgb, var(--dsh-gw-ref-color) 68%, var(--gw-border-l2)); font-weight: 600; }
+.dsh-gw-ref-tag { color: var(--gw-state-success); }
+.dsh-gw-ref-stash { color: var(--gw-state-warn); }
 /* The worktree chip is one chip built from two cells: the inverted label (solid
    label color — black in light mode, white in dark — with the text knocked out),
    then the branch it holds drawn as a branch chip is. The frame belongs to the
    chip, not to either cell, so the label colour rings the whole pair while the
    branch name sits on its own lane-tinted surface rather than on the label's
    black. No gap between the cells, and the frame clips them to its own corners. */
-.dsh-gw-ref-worktree { display: inline-flex; align-items: stretch; gap: 0; padding: 0; border: 1px solid var(--dsw-alias-label-primary); border-radius: 5px; overflow: hidden; background: none; font-size: 11px; }
-.dsh-gw-ref-worktree-label { display: inline-flex; align-items: center; padding: 0 7px; background: var(--dsw-alias-label-primary); color: var(--dsw-alias-bg-base); font-size: 12px; font-weight: 600; line-height: 18px; }
-.dsh-gw-ref-worktree-held { display: inline-flex; align-items: center; gap: 4px; padding: 0 7px 0 0; background: color-mix(in srgb, var(--dsh-gw-ref-color) 8%, var(--dsw-alias-bg-layer-2)); color: var(--dsw-alias-label-primary); line-height: 18px; }
+.dsh-gw-ref-worktree { display: inline-flex; align-items: stretch; gap: 0; padding: 0; border: 1px solid var(--gw-label-primary); border-radius: 5px; overflow: hidden; background: none; font-size: 11px; }
+.dsh-gw-ref-worktree-label { display: inline-flex; align-items: center; padding: 0 7px; background: var(--gw-label-primary); color: var(--gw-bg-base); font-size: 12px; font-weight: 600; line-height: 18px; }
+.dsh-gw-ref-worktree-held { display: inline-flex; align-items: center; gap: 4px; padding: 0 7px 0 0; background: color-mix(in srgb, var(--dsh-gw-ref-color) 8%, var(--gw-bg-layer-2)); color: var(--gw-label-primary); line-height: 18px; }
 .dsh-gw-ref-worktree-icon { display: inline-flex; align-items: center; justify-content: center; align-self: stretch; width: 18px; min-width: 18px; background: var(--dsh-gw-ref-color); color: white; }
 .dsh-gw-ref-worktree-icon svg { display: block; }
 .dsh-gw-ref-worktree-name { display: inline-flex; align-items: center; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dsh-gw-ref-worktree-remote { color: var(--dsw-alias-label-secondary); font-style: italic; }
+.dsh-gw-ref-worktree-remote { color: var(--gw-label-secondary); font-style: italic; }
 
 .dsh-gw-uncommitted { font-weight: 600; }
 .dsh-gw-row-head { font-weight: 600; }
@@ -160,7 +160,7 @@ const viewState = new Map();
    the same recipe as the row that opened it, one step weaker: in the light theme
    the base and the layer surface are both white, so an expanded detail used to
    be the same white as every closed row around it. */
-.dsh-gw-detailrow { display: flex; align-items: stretch; border-left: 2px solid transparent; border-bottom: 1px solid var(--dsw-alias-border-l1); background: color-mix(in srgb, var(--dsw-alias-label-primary) 4%, var(--dsw-alias-bg-layer-1)); }
+.dsh-gw-detailrow { display: flex; align-items: stretch; border-left: 2px solid transparent; border-bottom: 1px solid var(--gw-border-l1); background: color-mix(in srgb, var(--gw-label-primary) 4%, var(--gw-bg-layer-1)); }
 .dsh-gw-rail { position: relative; flex: 0 0 auto; align-self: stretch; overflow: hidden; }
 .dsh-gw-rail-line { position: absolute; top: 0; bottom: 0; border-radius: 1px; }
 .dsh-gw-rail-turn { position: absolute; display: block; overflow: visible; }
@@ -173,47 +173,47 @@ const viewState = new Map();
    halves ends — the message keeps its height, the file list stops at its cap. */
 .dsh-gw-detail { display: flex; align-items: stretch; }
 .dsh-gw-detail-narrow { flex-direction: column; }
-.dsh-gw-detail-left { flex: 1 1 0; padding: 8px 10px; min-width: 0; border-right: 1px solid var(--dsw-alias-border-l1); }
-.dsh-gw-detail-narrow .dsh-gw-detail-left { border-right: 0; border-bottom: 1px solid var(--dsw-alias-border-l1); }
+.dsh-gw-detail-left { flex: 1 1 0; padding: 8px 10px; min-width: 0; border-right: 1px solid var(--gw-border-l1); }
+.dsh-gw-detail-narrow .dsh-gw-detail-left { border-right: 0; border-bottom: 1px solid var(--gw-border-l1); }
 .dsh-gw-detail-narrow .dsh-gw-detail-left, .dsh-gw-detail-narrow .dsh-gw-detail-right { flex: 0 0 auto; }
 .dsh-gw-kv { display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 2px 8px; }
-.dsh-gw-k { color: var(--dsw-alias-label-secondary); }
+.dsh-gw-k { color: var(--gw-label-secondary); }
 .dsh-gw-v { min-width: 0; overflow-wrap: anywhere; }
 .dsh-gw-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-.dsh-gw-body { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--dsw-alias-border-l1); white-space: pre-wrap; color: var(--dsw-alias-label-secondary); }
-.dsh-gw-legacy { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--dsw-alias-label-secondary); }
+.dsh-gw-body { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--gw-border-l1); white-space: pre-wrap; color: var(--gw-label-secondary); }
+.dsh-gw-legacy { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--gw-label-secondary); }
 /* Only the changed-file column is capped, and it scrolls on its own: the metadata
    and the commit message beside it keep their natural height, so a long message
    grows the block while a long file list scrolls inside its own box. The cap is
    inherited from the row, which also carries the rail, so the lane the expanded
    row sits on is drawn down the whole block however tall the left column gets. */
 .dsh-gw-detail-right { flex: 1 1 0; padding: 8px 10px; min-width: 0; max-height: var(--dsh-gw-detail-max); overflow: auto; }
-.dsh-gw-stat { color: var(--dsw-alias-label-secondary); margin-bottom: 6px; }
+.dsh-gw-stat { color: var(--gw-label-secondary); margin-bottom: 6px; }
 .dsh-gw-add { color: ${DIFF_ADD}; }
 .dsh-gw-del { color: ${DIFF_DEL}; }
 .dsh-gw-ftree { display: flex; flex-direction: column; }
 .dsh-gw-frow { display: flex; align-items: center; gap: 6px; height: 19px; min-width: 0; }
 .dsh-gw-fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dsh-gw-fstat { display: inline-flex; gap: 4px; margin-left: auto; padding-left: 8px; flex: 0 0 auto; }
-.dsh-gw-form { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 6px 8px; border-bottom: 1px solid var(--dsw-alias-border-l1); background: var(--dsw-alias-bg-layer-1); }
-.dsh-gw-input { flex: 1 1 140px; min-width: 0; height: 24px; padding: 0 6px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 6px; background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); font: inherit; }
-.dsh-gw-menu { position: fixed; z-index: 20; display: flex; flex-direction: column; min-width: 168px; padding: 4px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 6px; background: var(--dsw-alias-bg-layer-2); box-shadow: 0 6px 24px rgba(0, 0, 0, 0.28); }
-.dsh-gw-menu button { border: 0; background: none; color: var(--dsw-alias-label-primary); text-align: left; padding: 6px 8px; border-radius: 4px; font: inherit; cursor: pointer; }
-.dsh-gw-menu button:hover { background: var(--dsw-alias-bg-layer-1); }
+.dsh-gw-form { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 6px 8px; border-bottom: 1px solid var(--gw-border-l1); background: var(--gw-bg-layer-1); }
+.dsh-gw-input { flex: 1 1 140px; min-width: 0; height: 24px; padding: 0 6px; border: 1px solid var(--gw-border-l2); border-radius: 6px; background: var(--gw-bg-layer-2); color: var(--gw-label-primary); font: inherit; }
+.dsh-gw-menu { position: fixed; z-index: 20; display: flex; flex-direction: column; min-width: 168px; padding: 4px; border: 1px solid var(--gw-border-l2); border-radius: 6px; background: var(--gw-bg-layer-2); box-shadow: 0 6px 24px rgba(0, 0, 0, 0.28); }
+.dsh-gw-menu button { border: 0; background: none; color: var(--gw-label-primary); text-align: left; padding: 6px 8px; border-radius: 4px; font: inherit; cursor: pointer; }
+.dsh-gw-menu button:hover { background: var(--gw-bg-layer-1); }
 .dsh-gw-backdrop { position: fixed; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgba(0, 0, 0, 0.45); }
-.dsh-gw-modal { width: min(420px, 100%); max-height: 80%; overflow: auto; padding: 14px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 8px; background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-primary); }
+.dsh-gw-modal { width: min(420px, 100%); max-height: 80%; overflow: auto; padding: 14px; border: 1px solid var(--gw-border-l2); border-radius: 8px; background: var(--gw-bg-base); color: var(--gw-label-primary); }
 .dsh-gw-modal h2 { margin: 0 0 8px; font-size: 13px; }
-.dsh-gw-modal p { margin: 4px 0; font-size: 11px; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }
+.dsh-gw-modal p { margin: 4px 0; font-size: 11px; color: var(--gw-label-secondary); overflow-wrap: anywhere; }
 .dsh-gw-modal ol { max-height: 140px; overflow: auto; margin: 6px 0; padding-left: 20px; font-size: 11px; }
-.dsh-gw-warn { color: var(--dsw-alias-state-warn-primary); }
+.dsh-gw-warn { color: var(--gw-state-warn); }
 .dsh-gw-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 10px; }
-.dsh-gw-danger { border-color: var(--dsw-alias-state-error-primary); color: var(--dsw-alias-state-error-primary); }
+.dsh-gw-danger { border-color: var(--gw-state-error); color: var(--gw-state-error); }
 `;
 
 /**
  * One API read.
  *
- * The DSH host answers reads over the same-origin route it registered.
+ * The configured transport answers reads using its platform's route or API.
  */
 type ViewAction = 'worktrees' | 'graph' | 'diff' | 'commit' | 'uncommitted';
 
@@ -236,7 +236,7 @@ export interface ViewOperations {
   cherryPickApply(params: ViewParams): Promise<unknown>;
 }
 
-/** The DSH host's reads, keyed by the action the view asks for. */
+/** The host's reads, keyed by the action the view asks for. */
 export interface ViewTransport {
   worktrees(params: ViewParams, sessionId: string | null, signal?: AbortSignal): Promise<WorktreesPayload>;
   graph(params: ViewParams, sessionId: string | null, signal?: AbortSignal): Promise<GraphPayload>;
@@ -249,7 +249,7 @@ export interface ViewTransport {
 
 let transport: ViewTransport | null = null;
 
-/** Install the DSH host's reads before mounting this view. */
+/** Install the host's reads before mounting this view. */
 function configureView(next: ViewTransport): void {
   transport = next;
 }
@@ -455,7 +455,7 @@ function layoutLanes(nodes: GraphNode[]): LaneLayout {
     // invalid `grid-template-columns` the panel cannot lay out — which fails
     // as a silent stack of one-cell rows rather than as anything readable.
     if (!Number.isInteger(edge.fromLane) || !Number.isInteger(edge.toLane)) {
-      throw new Error(`dsh-git-worktree: lane layout left edge ${edge.from}→${edge.parent} without a column`);
+      throw new Error(`git-worktree: lane layout left edge ${edge.from}→${edge.parent} without a column`);
     }
     width = Math.max(width, edge.fromLane + 1, edge.toLane + 1);
   }
@@ -579,7 +579,7 @@ function GraphCell(props) {
       children.push(h('line', {
         key: 'working-tree-link',
         x1: laneX(lane), y1: 0, x2: laneX(lane), y2: ROW / 2,
-        stroke: 'var(--dsw-alias-label-secondary)', strokeWidth: 1.6,
+        stroke: 'var(--gw-label-secondary)', strokeWidth: 1.6,
       }));
     }
     // The hollow circle always marks the newest change: the working tree
@@ -587,8 +587,8 @@ function GraphCell(props) {
     // the row background through the node.
     children.push(h('circle', {
       key: 'node', cx: laneX(lane), cy: ROW / 2, r: head ? 4.5 : 4,
-      fill: head ? 'var(--dsw-alias-bg-base)' : colors.get(lane),
-      stroke: head ? colors.get(lane) : 'var(--dsw-alias-bg-base)',
+      fill: head ? 'var(--gw-bg-base)' : colors.get(lane),
+      stroke: head ? colors.get(lane) : 'var(--gw-bg-base)',
       strokeWidth: head ? 2 : 1.6,
     }));
   }
@@ -618,7 +618,7 @@ function GraphRail(props) {
     lines.push(h('span', {
       key: 'working-tree-link',
       className: 'dsh-gw-rail-line',
-      style: { left: `${laneX(0) - 0.8}px`, width: '1.6px', background: 'var(--dsw-alias-label-secondary)' },
+      style: { left: `${laneX(0) - 0.8}px`, width: '1.6px', background: 'var(--gw-label-secondary)' },
     }));
   }
   const bandTop = (index + 1) * ROW;
@@ -1071,7 +1071,7 @@ function WorktreeTab(props) {
   const [width, setWidth] = React.useState<number>(900);
   const [height, setHeight] = React.useState<number>(720);
   // The write controls. They are appended after the nine read states on purpose:
-  // `scripts/verify-dsh.mjs` drives this component by injecting a scenario into
+  // The integration's verification script drives this component by injecting a scenario into
   // states 0 and 1 and overriding 4, 5 and 8, so the read states keep their
   // positions and only the panel's powers gain new ones.
   const [menu, setMenu] = React.useState<{ x: number; y: number; commit: string } | null>(null);
@@ -1400,9 +1400,9 @@ function WorktreeTab(props) {
         width: graphWidth, height: ROW, 'aria-hidden': true,
       },
         worktreeLink
-          ? h('line', { x1: laneX(0), y1: ROW / 2, x2: laneX(0), y2: ROW, stroke: 'var(--dsw-alias-label-secondary)', strokeWidth: 1.6 })
+          ? h('line', { x1: laneX(0), y1: ROW / 2, x2: laneX(0), y2: ROW, stroke: 'var(--gw-label-secondary)', strokeWidth: 1.6 })
           : null,
-        h('circle', { cx: laneX(0), cy: ROW / 2, r: 4.5, fill: 'var(--dsw-alias-bg-base)', stroke: 'var(--dsw-alias-label-secondary)', strokeWidth: 2 }))) : null,
+        h('circle', { cx: laneX(0), cy: ROW / 2, r: 4.5, fill: 'var(--gw-bg-base)', stroke: 'var(--gw-label-secondary)', strokeWidth: 2 }))) : null,
       h('div', { className: 'dsh-gw-cell' },
         h('span', { className: 'dsh-gw-subjtext dsh-gw-uncommitted' },
           `Uncommitted Changes (${changeCount})`),

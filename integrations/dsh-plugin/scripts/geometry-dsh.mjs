@@ -1,7 +1,7 @@
 /**
  * Toolbar geometry check for the DSH Git Worktree bundle.
  *
- * Run with:  node scripts/geometry-dsh.mjs
+ * Run with:  node integrations/dsh-plugin/scripts/geometry-dsh.mjs
  *
  * The toolbar chip carries a worktree path, and a path is the one string in this
  * panel that can be arbitrarily long. `verify-dsh.mjs` checks the shortening rule as
@@ -22,8 +22,8 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { withPage } from './lib/cdp.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
-/** The bundle directory these checks read: the scripts live beside it, not in it. */
-const pluginDir = resolve(here, '..', 'dsh-plugin');
+/** The bundle directory these checks read: the scripts live within it. */
+const pluginDir = resolve(here, '..');
 const failures = [];
 
 function check(condition, message) {
@@ -53,6 +53,11 @@ const client = (await readFile(join(pluginDir, 'client.js'), 'utf8'))
 const stylesheet = /const CSS = `([\s\S]*?)`;/.exec(client)?.[1];
 if (!stylesheet) {
   console.error('Could not read the stylesheet out of client.js.');
+  process.exit(1);
+}
+const themeStylesheet = /const DSH_THEME_CSS = `([\s\S]*?)`;/.exec(client)?.[1];
+if (!themeStylesheet) {
+  console.error('Could not read the DSH theme mapping out of client.js.');
   process.exit(1);
 }
 
@@ -160,6 +165,7 @@ body{margin:0;font-family:system-ui,sans-serif;background:#fff;color:#0f1115}
 section{display:inline-block;vertical-align:top;margin:6px}
 section p{font:11px system-ui;margin:2px 4px}
 .frame{border:1px solid #bbb;box-sizing:border-box;overflow:hidden}
+${themeStylesheet}
 ${stylesheet}
 </style></head><body>${sections}
 <script>

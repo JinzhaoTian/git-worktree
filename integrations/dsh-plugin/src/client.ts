@@ -10,8 +10,26 @@
  * DSH tab.
  */
 import * as React from 'react';
-import { Boundary, GuideIcon, WorktreeTab, WorktreeTitle, configureView } from '../ui/worktree.js';
-import type { ViewParams, ViewTransport } from '../ui/worktree.js';
+import { Boundary, GuideIcon, WorktreeTab, WorktreeTitle, configureView } from '../../../src/ui/worktree.js';
+import type { ViewParams, ViewTransport } from '../../../src/ui/worktree.js';
+
+// Map the shared panel's theme variables to the DSH host. The panel owns no
+// DSH token names, so another platform can provide its own mapping.
+const DSH_THEME_CSS = `
+.dsh-gw {
+  --gw-label-primary: var(--dsw-alias-label-primary);
+  --gw-label-secondary: var(--dsw-alias-label-secondary);
+  --gw-bg-base: var(--dsw-alias-bg-base);
+  --gw-bg-layer-1: var(--dsw-alias-bg-layer-1);
+  --gw-bg-layer-2: var(--dsw-alias-bg-layer-2);
+  --gw-border-l1: var(--dsw-alias-border-l1);
+  --gw-border-l2: var(--dsw-alias-border-l2);
+  --gw-brand-primary: var(--dsw-alias-brand-primary);
+  --gw-state-warn: var(--dsw-alias-state-warn-primary);
+  --gw-state-success: var(--dsw-alias-state-success-primary);
+  --gw-state-error: var(--dsw-alias-state-error-primary);
+  --gw-sidebar-fill: var(--dsw-specific-sidebar-fill);
+}`;
 
 const API = '/dsh-git-worktree/api';
 const KIND = 'git-worktree';
@@ -102,7 +120,9 @@ function apply(ctx: ClientContext): void {
   ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
     name: 'sidebar.right.pane.tab',
     key: NS,
-  }, (props) => React.createElement(Boundary, null, React.createElement(WorktreeTab, { ...props }))));
+  }, (props) => React.createElement(React.Fragment, null,
+    React.createElement('style', null, DSH_THEME_CSS),
+    React.createElement(Boundary, null, React.createElement(WorktreeTab, { ...props })))));
 
   ctx.slots.inject('sidebar.right.pane.tab.title', () => ctx.slots.register({
     name: 'sidebar.right.pane.tab.title',

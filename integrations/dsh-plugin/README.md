@@ -10,28 +10,31 @@ follows the host theme, and survives page reloads with the Session.
 | --- | --- |
 | `package.json` | Bundle manifest: `dsh.bundle.patch` plus the `dsh.client` browser half |
 | `cordis.patch.yml` | The one Loader row this bundle inserts |
-| `index.js` | Host half — **built** from `src/dsh/host.ts`; do not edit it here |
-| `client.js` | Browser half — **built** from `src/dsh/client.ts`; do not edit it here |
-This directory holds only what is installed: the manifest, the patch, and the two built
-halves. Its checks live in the repository's `scripts/` directory, because they are
-development tools rather than part of the bundle.
+| `index.js` | Host half — **built** from `src/host.ts`; do not edit it here |
+| `client.js` | Browser half — **built** from `src/client.ts`; do not edit it here |
 
-`index.js` and `client.js` are **not committed** — they are ignored build output.
-The profile installs this directory by linking to it, so the files must
-exist here when it is installed, which is what the build step below produces.
+This directory is the installable bundle. Its `src/` and `scripts/` directories are
+development inputs; the manifest, patch, and two built halves are loaded by DSH.
+
+`index.js` and `client.js` are generated from TypeScript and committed with the
+bundle. A fresh checkout can be installed directly; rebuild them whenever their
+source changes so the installed plugin uses the current code.
 
 The two artifacts are build output. Their sources are:
 
 | Source | Role |
 | --- | --- |
-| `../src/core/` | The Git core: every `execFile` bind, worktree parsing, refs, the paged graph, and the numstat/diff readers |
-| `../src/dsh/host.ts` | This bundle's host policy: Session→workspace resolution, the HTTP route, and the payload mapping |
-| `../src/ui/worktree.ts` | The React view mounted by the DSH client |
-| `../src/dsh/client.ts` | This bundle's browser policy: the same-origin transport and the tab registration |
-| `../scripts/build-dsh.mjs` | esbuild: bundles both halves into this directory, unminified and without runtime dependencies |
-| `../scripts/verify-dsh.mjs` | Pre-install checks: parses both halves, validates the manifest and patch, exercises the layout and rendering |
-| `../scripts/geometry-dsh.mjs` | Browser geometry check: renders the real toolbar chip and measures it at the widths a panel takes |
-| `../scripts/lib/cdp.mjs` | The dependency-free DevTools client both `geometry-dsh.mjs` uses, with cross-platform browser discovery |
+| `../../src/core/` | The Git core: every `execFile` bind, worktree parsing, refs, the paged graph, and the numstat/diff readers |
+| `src/host.ts` | This bundle's host policy: Session→workspace resolution, the HTTP route, and the payload mapping |
+| `../../src/ui/worktree.ts` | The React view mounted by the DSH client |
+| `src/client.ts` | This bundle's browser policy: the same-origin transport and the tab registration |
+| `scripts/build-dsh.mjs` | esbuild: bundles both halves into this directory, unminified and without runtime dependencies |
+| `scripts/verify-dsh.mjs` | Pre-install checks: parses both halves, validates the manifest and patch, exercises the layout and rendering |
+| `scripts/geometry-dsh.mjs` | Browser geometry check: renders the real toolbar chip and measures it at the widths a panel takes |
+| `scripts/lib/cdp.mjs` | The DevTools client used by the geometry check, with cross-platform browser discovery |
+
+The shared view uses `--gw-*` theme variables. `src/client.ts` maps them to
+DSH's `--dsw-*` tokens, so the panel follows the host's light and dark themes.
 
 ## Why a Host half exists
 
@@ -69,7 +72,7 @@ A write is refused with HTTP 403 when it names another origin and with HTTP 415 
 does not declare `application/json`. That pair is the whole guard: this route is
 same-origin and token-less, a cross-site request cannot set that content type without a
 preflight, and this route answers no preflight. The writes themselves are the same
-`src/core/operations.ts` code used by the panel, including the readiness checks,
+`../../src/core/operations.ts` code used by the panel, including the readiness checks,
 plan lifetime, and apply-time rechecks.
 
 A Git failure is returned as `{ "ok": false, "error": "…" }` with HTTP 200, because a
@@ -77,27 +80,26 @@ broken worktree is an answer the tab renders, not a transport error.
 
 ## Install
 
-The shell in this session cannot run commands, so the build and install steps are yours:
+From the repository root, refresh and verify the runtime files after source changes:
 
 ```powershell
-# 0. Build both halves from source (TypeScript → this directory)
-npm run build
+# Build both halves from source (TypeScript → this directory)
+npm run build:dsh
 
-# 1. Pre-install checks (parses both halves, validates the manifest and patch)
-npm run verify
+# Pre-install checks (parses both halves, validates the manifest and patch)
+npm run verify:dsh
 
-# 2. Toolbar geometry (needs Chrome or Edge; renders the chip and measures it)
-npm run geometry
+# Toolbar geometry (needs Chrome or Edge; renders the chip and measures it)
+npm run geometry:dsh
 ```
 
-Step 0 is not optional, and on a fresh clone it is the difference between a check that
-runs and one that stops with `dsh-plugin/index.js is missing`. `index.js` and `client.js`
-are build output and are not in git, so editing them directly is lost on the next build,
-and verify reads the built text. The build needs no network and writes inside this
-directory only.
+The build needs no network and writes inside this directory only. Edit the
+TypeScript sources, then rebuild and include the updated `index.js` and
+`client.js` with the source changes; direct edits to those generated files are
+overwritten on the next build.
 
 Then install the directory as a bundle through the `plugin_manager` tool with
-`action: install_bundle` and `target: D:\repos\git-worktree\dsh-plugin`. The manifest
+`action: install_bundle` and `target: D:\repos\git-worktree\integrations\dsh-plugin`. The manifest
 declares no npm dependencies and no install scripts, so nothing needs to be fetched or
 built **at install time** — the shared core and view are bundled into the two artifacts,
 and there should be no `pendingBuilds` to approve.
@@ -243,8 +245,8 @@ a stopped operation.
   expanded row itself, drawing the same two columns and the same ramp, measured from the
   rail's top. Without it the lane stopped at
   the row above and started again below the detail, leaving the dots looking unrelated.
-- The two halves are separate files. `scripts/verify-dsh.mjs` parses both, and
-  `node --check dsh-plugin/index.js` parses the host half on its own, because the
+- The two halves are separate files. `integrations/dsh-plugin/scripts/verify-dsh.mjs` parses both, and
+  `node --check integrations/dsh-plugin/index.js` parses the host half on its own, because the
   manifest declares `"type": "module"`. If the installer ever refuses the host half's
   static imports, the fix is to load `node:child_process` and friends through
   `await import(...)` inside `apply`, which makes `index.js` genuinely self-contained.
@@ -253,8 +255,8 @@ a stopped operation.
 
 Checked against a live Harness, not by inspection alone:
 
-- both halves parse and the manifest and patch validate (`scripts/verify-dsh.mjs`);
-- the toolbar chip is measured, not just styled: `scripts/geometry-dsh.mjs` renders the real
+- both halves parse and the manifest and patch validate (`integrations/dsh-plugin/scripts/verify-dsh.mjs`);
+- the toolbar chip is measured, not just styled: `integrations/dsh-plugin/scripts/geometry-dsh.mjs` renders the real
   stylesheet and the real chip markup in headless Chrome at four path shapes and five
   panel widths, and asserts that the status dot keeps its full size inside both the chip
   and the toolbar, that the chip never extends past the toolbar, and that a path too long
@@ -262,20 +264,20 @@ Checked against a live Harness, not by inspection alone:
 - `install_bundle` links the package into the profile and applies it (`application: applied`);
 - the client registers: `sidebar.right.pane.tab` and `sidebar.right.pane.tab.title` each
   list `@local/dsh-git-worktree` as an active occupant, and the tab opens from the tab
-  strip's guide card; `sidebar.footer.action` no longer lists it, which `scripts/verify-dsh.mjs` guards;
+  strip's guide card; `sidebar.footer.action` no longer lists it, which `integrations/dsh-plugin/scripts/verify-dsh.mjs` guards;
 - a real repository renders: worktree list, branch, uncommitted-change count, the commit
   lane list with ref chips, and an expanded `git show`;
 - a row draws local branches and the worktree chip only: the host behavior block puts a
   branch, a remote mirror, a tag and a stash on one commit and asserts that the row carries
   the first two kinds and that `refCount` agrees with what was sent, while the panel render
   asserts the same filter and that an older Host's count earns no `+N` badge;
-- an expanded row keeps the graph's column: `scripts/verify-dsh.mjs` renders the panel with a row open
+- an expanded row keeps the graph's column: `integrations/dsh-plugin/scripts/verify-dsh.mjs` renders the panel with a row open
   and asserts the rail beside the detail, the width it indents by, and the lane's two columns
   — its own column throughout for a straight lane, and for a lane change two runs on the two
   columns with the crossing drawn as an arc between them. It also asserts
   the cap: its share of the panel's height at three panel heights, its floor and its ceiling,
   and that hiding the graph column drops the rail without dropping the row. The geometry
-  screenshot in a headless browser — `scripts/geometry-dsh.mjs` now does this on every run — from the
+  screenshot in a headless browser — `integrations/dsh-plugin/scripts/geometry-dsh.mjs` now does this on every run — from the
   plugin's own markup and stylesheet plus the Host's light-theme tokens, because this session
   has no control of the live page (a refresh of the tab is what shows the change there);
 - the session workspace resolves on the Host, so the tab follows the current workspace
@@ -297,7 +299,7 @@ arrived.
 
 The fourth came from using the panel: the `Uncommitted Changes` row was drawn whenever a
 repository resolved, so a clean worktree showed a dead row that expanded into an empty
-detail; it now renders only while the worktree has changes. `scripts/verify-dsh.mjs` carries a regression
+detail; it now renders only while the worktree has changes. `integrations/dsh-plugin/scripts/verify-dsh.mjs` carries a regression
 check for the blanked graph and now asserts both cleanliness states on real render output — a
 dirty worktree keeps the row, a clean one has none.
 
@@ -320,6 +322,6 @@ a saving of at least five characters before it will shorten at all, which answer
 with `E:/w…/ThBIMWindowsUI`. The chip also clips its own overflow now, as a second line of
 defence beside the shrink it already had, so an over-long path cannot push the chip's own
 contents out of the toolbar. Both are checked on measured geometry rather than on source
-text: `scripts/verify-dsh.mjs` asserts the rule's answers and the chip's rules, and `scripts/geometry-dsh.mjs` puts
+text: `integrations/dsh-plugin/scripts/verify-dsh.mjs` asserts the rule's answers and the chip's rules, and `integrations/dsh-plugin/scripts/geometry-dsh.mjs` puts
 the same markup in a browser and asserts the dot stays whole and inside the chip at every
 width.
