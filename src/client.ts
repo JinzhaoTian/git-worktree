@@ -10,7 +10,7 @@
  * DSH tab.
  */
 import * as React from 'react';
-import { Boundary, GuideIcon, WorktreeTab, WorktreeTitle, configureView } from './ui/worktree.js';
+import { Boundary, GuideIcon, WorktreeTab, WorktreeTitle, WORKTREE_TAB_TITLE, configureView } from './ui/worktree.js';
 import type { ViewParams, ViewTransport } from './ui/worktree.js';
 
 // Map the shared panel's theme variables to the DSH host. The panel owns no
@@ -107,11 +107,11 @@ function apply(ctx: ClientContext): void {
     kind: KIND,
     multiple: false,
     priority: 'builtin',
-    title: () => 'Git Worktree',
+    title: () => WORKTREE_TAB_TITLE,
     guide: [{
       id: 'open',
       order: 60,
-      title: () => 'Git Worktree',
+      title: () => WORKTREE_TAB_TITLE,
       description: () => '浏览当前工作区的 worktree、分支与提交图',
       icon: GuideIcon,
     }],

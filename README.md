@@ -53,7 +53,7 @@ With `patchReload: "live"` the running Host picks the change up. Confirm with
 
 ## Use
 
-- Open the tab from the tab strip's `+` guide, or its `Git Worktree` card.
+- Open the tab from the tab strip's `+` guide, or its `Git Worktree Graph` card.
 - The toolbar names the worktree the Session sits in; refresh re-reads worktrees
   and status. The dot is amber while dirty, green when clean, and the error
   colour when the Host could not read it.

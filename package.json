@@ -28,7 +28,7 @@
     }
   },
   "meta": {
-    "title": "Git Worktree",
+    "title": "Git Worktree Graph",
     "description": "Browse this workspace's Git worktrees, branches and commit history in a right-sidebar tab."
   },
   "scripts": {
@@ -37,6 +37,7 @@
     "check": "npm run typecheck && npm run build"
   },
   "devDependencies": {
+    "@deepseek-ai/dsh-client-ui-primitives": "0.2.0-rc.1",
     "@types/node": "^22.0.0",
     "@types/react": "^19.2.0",
     "esbuild": "^0.25.0",

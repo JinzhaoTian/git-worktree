@@ -12,6 +12,11 @@
  * `h(...)`-based and keeps its stylesheet compatible with those checks.
  */
 import * as React from 'react';
+import {
+  IconBranchOutlineRegular,
+  IconRefreshOutlineRegular,
+  PathLabel,
+} from '@deepseek-ai/dsh-client-ui-primitives';
 import type {
   ChangedFile,
   CommitDetailPayload,
@@ -31,6 +36,7 @@ import type {
 // each leaf element's attribute list.
 const h = React.createElement as (type: any, props?: any, ...children: any[]) => any;
 
+const WORKTREE_TAB_TITLE = 'Git Worktree Graph';
 
 const PAGE = 300;
 const ROW = 26;
@@ -64,7 +70,7 @@ const LANE_COLORS = ['#2f8ae0', '#d0569b', '#38a169', '#d98a2b', '#8b72e0', '#0f
 const DIFF_ADD = '#3fa34d';
 const DIFF_DEL = '#d05a4e';
 
-// Presentational choices per Session: scope, remote-ref visibility, graph column.
+// Presentational choices per Session: scope and remote-ref visibility.
 const viewState = new Map();
 
     const CSS = `
@@ -73,34 +79,21 @@ const viewState = new Map();
 .dsh-gw-btn { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; gap: 4px; height: 24px; padding: 0 8px; border: 1px solid var(--gw-border-l2); border-radius: 6px; background: var(--gw-bg-layer-1); color: var(--gw-label-primary); font: inherit; cursor: pointer; }
 .dsh-gw-btn:hover:not(:disabled) { background: var(--gw-bg-layer-2); }
 .dsh-gw-btn:disabled { opacity: .5; cursor: default; }
-.dsh-gw-tbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; row-gap: 4px; min-height: 36px; padding: 5px 8px; border-bottom: 1px solid var(--gw-border-l1); background: var(--gw-sidebar-fill); }
-.dsh-gw-spacer { flex: 1 1 auto; min-width: 4px; }
-.dsh-gw-check { display: inline-flex; align-items: center; gap: 5px; color: var(--gw-label-primary); cursor: pointer; white-space: nowrap; }
-.dsh-gw-icons { display: inline-flex; align-items: center; gap: 2px; }
-.dsh-gw-iconbtn { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border: 0; border-radius: 6px; background: none; color: var(--gw-label-secondary); cursor: pointer; }
-.dsh-gw-iconbtn:hover { background: var(--gw-bg-layer-2); color: var(--gw-label-primary); }
-/* The worktree chip rides in the toolbar, so it has to give up width to the
-   controls beside it and ellipsise the path rather than push them around. Both
-   the chip and the text inside it need a zero minimum for that to happen, and
-   the chip clips its own overflow as a second line of defence: the path is the
-   one thing here that can be arbitrarily long, so a chip that could not shrink
-   would push its own status dot and the folder name out of the toolbar instead
-   of cutting the text. The dot stays outside that cut — it is drawn before the
-   text and never shrinks — so the state keeps its colour whatever the path is. */
-.dsh-gw-wt { display: inline-flex; align-items: center; gap: 4px; flex: 0 1 auto; min-width: 0; max-width: 100%; overflow: hidden; height: 20px; padding: 0 7px; border: 1px solid var(--gw-border-l1); border-radius: 999px; background: var(--gw-bg-layer-1); color: var(--gw-label-secondary); font: inherit; }
-.dsh-gw-wt .dsh-gw-subjtext { min-width: 0; overflow: hidden; }
-.dsh-gw-wt-current { background: var(--gw-brand-primary); border-color: var(--gw-brand-primary); color: var(--gw-bg-base); }
+.dsh-gw-tbar { display: flex; align-items: center; gap: 4px; flex: 0 0 38px; width: 100%; min-width: 0; height: 38px; padding: 0 6px 0 16px; border-bottom: .5px solid var(--dsw-alias-border-l3, var(--gw-border-l1)); background: var(--gw-sidebar-fill); white-space: nowrap; }
+.dsh-gw-icons { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 2px; }
+.dsh-gw-iconbtn { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 6px; border: 0; border-radius: var(--dsw-radius-sm, 6px); background: none; color: var(--gw-label-secondary); cursor: pointer; line-height: 1; }
+.dsh-gw-iconbtn svg { width: 15px; height: 15px; }
+.dsh-gw-iconbtn:hover, .dsh-gw-iconbtn[aria-pressed=true] { background: var(--dsw-alias-interactive-bg-hover, var(--gw-bg-layer-2)); color: var(--gw-label-primary); }
+.dsh-gw-iconbtn:focus-visible { outline: 2px solid var(--gw-brand-primary); outline-offset: 1px; }
+.dsh-gw-wt { margin-right: 12px; }
+.dsh-gw-wt-placeholder { flex: 1 1 auto; min-width: 0; overflow: hidden; color: var(--gw-label-secondary); }
 .dsh-gw-dot { flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: var(--gw-state-warn); }
-.dsh-gw-dot-clean { background: var(--gw-state-success); }
-.dsh-gw-dot-unknown { background: var(--gw-state-error); }
 .dsh-gw-msg { padding: 5px 10px; color: var(--gw-label-secondary); border-bottom: 1px solid var(--gw-border-l1); }
 .dsh-gw-error { margin: 8px 10px; padding: 6px 8px; border: 1px solid var(--gw-state-error); border-radius: 6px; color: var(--gw-state-error); white-space: pre-wrap; word-break: break-word; }
 .dsh-gw-empty { padding: 16px 10px; color: var(--gw-label-secondary); text-align: center; }
 
 .dsh-gw-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; }
 .dsh-gw-grid { display: flex; flex-direction: column; min-width: 100%; }
-.dsh-gw-hrow { position: sticky; top: 0; z-index: 2; display: grid; grid-template-columns: var(--dsh-gw-cols); align-items: center; height: 26px; background: var(--gw-bg-layer-1); border-bottom: 1px solid var(--gw-border-l1); color: var(--gw-label-secondary); font-weight: 600; }
-.dsh-gw-hcell { padding: 0 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The lane is drawn as one ROW-tall slice per row, so a row's pitch has to be
    exactly ROW and every slice has to begin at its row's top. A bottom border
    and an inline SVG's baseline gap each add height the drawing knows nothing
@@ -195,8 +188,6 @@ const viewState = new Map();
 .dsh-gw-frow { display: flex; align-items: center; gap: 6px; height: 19px; min-width: 0; }
 .dsh-gw-fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dsh-gw-fstat { display: inline-flex; gap: 4px; margin-left: auto; padding-left: 8px; flex: 0 0 auto; }
-.dsh-gw-form { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 6px 8px; border-bottom: 1px solid var(--gw-border-l1); background: var(--gw-bg-layer-1); }
-.dsh-gw-input { flex: 1 1 140px; min-width: 0; height: 24px; padding: 0 6px; border: 1px solid var(--gw-border-l2); border-radius: 6px; background: var(--gw-bg-layer-2); color: var(--gw-label-primary); font: inherit; }
 .dsh-gw-menu { position: fixed; z-index: 20; display: flex; flex-direction: column; min-width: 168px; padding: 4px; border: 1px solid var(--gw-border-l2); border-radius: 6px; background: var(--gw-bg-layer-2); box-shadow: 0 6px 24px rgba(0, 0, 0, 0.28); }
 .dsh-gw-menu button { border: 0; background: none; color: var(--gw-label-primary); text-align: left; padding: 6px 8px; border-radius: 4px; font: inherit; cursor: pointer; }
 .dsh-gw-menu button:hover { background: var(--gw-bg-layer-1); }
@@ -279,43 +270,6 @@ function samePath(left, right) {
   const norm = (value) => String(value || '').replace(/[\\/]+/g, '/').replace(/\/+$/, '').toLowerCase();
   const a = norm(left);
   return a !== '' && a === norm(right);
-}
-
-// The shortest a path may be shortened by and still be worth showing short.
-// Eliding a path to save one or two characters is not a shortening: it trades
-// characters a reader can see for an ellipsis they must decode, which is how
-// `E:/www.p6c/ThBIMWindowsUI` was drawn almost whole inside a chip.
-const PATH_MIN_SAVING = 5;
-
-/**
- * Shorten a worktree path for the toolbar.
- *
- * The part of a path that identifies it is the folder it ends in, and the
- * part that distinguishes two similar checkouts is the parent folder it sits
- * in. So the folder and the root's first four characters are always kept, and
- * the parent folder is cut to whatever the width budget still allows — as
- * little as one character, when that is all the budget there is. A path the
- * rule cannot shorten by `PATH_MIN_SAVING` characters is left whole rather
- * than traded for a barely-shorter string, and the chip ellipsises whatever
- * still overflows its own width.
- */
-function compactPath(path) {
-  const text = String(path || '');
-  const cut = Math.max(text.lastIndexOf('/'), text.lastIndexOf('\\'));
-  if (cut <= 0) return text;
-  const sep = text[cut];
-  const name = text.slice(cut + 1);
-  const parent = text.slice(0, cut);
-  const parentCut = Math.max(parent.lastIndexOf('/'), parent.lastIndexOf('\\'));
-  const segment = parentCut < 0 ? parent : parent.slice(parentCut + 1);
-  const head = text.slice(0, 4);
-  const attempt = (middle) => `${head}…${middle}${sep}${name}`;
-  // What is left for the parent name once the root, the ellipsis, the
-  // separator, the folder and the saving have taken their share.
-  const budget = text.length - PATH_MIN_SAVING - attempt('').length;
-  let compact = attempt('');
-  if (budget >= 1 && segment) compact = attempt(segment.slice(0, Math.min(segment.length, budget)));
-  return compact.length <= text.length - PATH_MIN_SAVING ? compact : text;
 }
 
 function shortOid(oid) {
@@ -730,8 +684,18 @@ function BranchRefIcon(props: GlyphProps = {}) {
   return h(GraphBranchGlyph, { ...props, flipVertical: true });
 }
 
-function GraphToggleIcon() {
-  return h(GraphBranchGlyph, { size: 14 });
+/** The remote-history toggle uses one cloud silhouette in both states. */
+function RemoteCloudIcon({ hidden }: { hidden: boolean }) {
+  return h('svg', {
+    width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none',
+    stroke: 'currentColor', strokeWidth: 1.2, strokeLinecap: 'round', strokeLinejoin: 'round',
+    'aria-hidden': true,
+  },
+    // Fill the same vertical span as the built-in refresh glyph. The slash
+    // stays inside that span, so toggling does not change the apparent size.
+    h('g', { transform: 'translate(0 -1.4) scale(1 1.18)' },
+      h('path', { d: 'M4.1 13h7.8a2.65 2.65 0 0 0 .32-5.28 4.35 4.35 0 0 0-8.4-1.28A3.35 3.35 0 0 0 4.1 13Z' }),
+      hidden ? h('path', { d: 'M2.1 2.65L13.9 13.35', strokeWidth: 1.4 }) : null));
 }
 
 /**
@@ -1065,7 +1029,9 @@ function WorktreeTab(props) {
   const [selected, setSelected] = React.useState<string | null>(null);
   const [scope, setScope] = React.useState<string>(saved.scope || 'all');
   const [showRemote, setShowRemote] = React.useState<boolean>(Boolean(saved.showRemote));
-  const [showGraph, setShowGraph] = React.useState<boolean>(saved.showGraph !== false);
+  // Keep this hook slot for the integration's render harness. The graph is
+  // always visible now that its toggle has been removed.
+  const [showGraph] = React.useState<boolean>(true);
   const [openKey, setOpenKey] = React.useState<string | null>(null);
   const [reloadKey, setReloadKey] = React.useState<number>(0);
   const [width, setWidth] = React.useState<number>(900);
@@ -1076,9 +1042,6 @@ function WorktreeTab(props) {
   // positions and only the panel's powers gain new ones.
   const [menu, setMenu] = React.useState<{ x: number; y: number; commit: string } | null>(null);
   const [preview, setPreview] = React.useState<OperationPreview | null>(null);
-  const [newPath, setNewPath] = React.useState<string>('');
-  const [newBranch, setNewBranch] = React.useState<string>('');
-  const [showCreate, setShowCreate] = React.useState<boolean>(false);
 
   // "Show Remote Branches" scopes the history itself, not only the labels:
   // unchecked, the Host walks local refs and drops remote-only commits.
@@ -1110,8 +1073,8 @@ function WorktreeTab(props) {
   }, []);
 
   React.useEffect(() => {
-    viewState.set(sessionId, { scope, showRemote, showGraph });
-  }, [sessionId, scope, showRemote, showGraph]);
+    viewState.set(sessionId, { scope, showRemote });
+  }, [sessionId, scope, showRemote]);
 
   // Resolve the repository at most once per session. `repo` is both an input
   // and an output of this effect, so without the `resolved` guard a second
@@ -1242,20 +1205,6 @@ function WorktreeTab(props) {
     }
   };
 
-  /** Create a branch and a worktree for it, then select it. */
-  const createWorktree = async () => {
-    if (!operations || !repo) return;
-    try {
-      const created = await operations.createWorktree({ repo, path: newPath, branch: newBranch, startPoint: 'HEAD' });
-      setShowCreate(false); setNewPath(''); setNewBranch('');
-      setSelected(created.path);
-      setState((previous) => ({ ...previous, status: 'loading', resolved: false, error: null }));
-      setReloadKey((key) => key + 1);
-    } catch (error) {
-      setState((previous) => ({ ...previous, error: error instanceof Error ? error.message : String(error) }));
-    }
-  };
-
   const nodes = state.nodes || [];
   const layout = React.useMemo(() => layoutLanes(nodes), [nodes]);
   const current = state.worktrees.find((item) => samePath(item.path, selected)) || null;
@@ -1301,86 +1250,41 @@ function WorktreeTab(props) {
     ...(showCommit ? ['82px'] : []),
   ].join(' ');
 
-  // Which worktree this panel is reading. It is a statement of context, not a
-  // control: the panel always follows the Session's own working directory, so
-  // there is nothing to choose. The path names the worktree, because two of
-  // them can sit on the same branch line and the path is the one thing only
-  // one of them owns; the branch rides along in the tooltip. The chip carries
-  // no "Worktree:" caption of its own: it is the toolbar's only statement of
-  // context, so the caption spent width on a word nothing needed to
-  // disambiguate it from.
+  // Match the built-in Files tab: PathLabel keeps the complete path and fades
+  // its leading edge when the pane is too narrow, leaving the filename visible.
   const toolbar = h('div', { className: 'dsh-gw-tbar' },
     current
-      ? h('span', {
-          className: 'dsh-gw-wt dsh-gw-wt-current',
+      ? h(PathLabel, {
+          path: current.path,
+          className: 'dsh-gw-wt',
           key: 'wt-path',
-          title: `${current.path} — ${current.branch || '(detached)'}${current.error ? ` — ${current.error}` : ''}`,
-        },
-          // The dot's colour is the worktree's state: amber while it has
-          // uncommitted changes, green once it is clean, and error when the
-          // Host could not read it at all. `status` is null for a bare or
-          // prunable worktree and when `git status` fails, and dressing that
-          // as "clean" would be a claim the panel cannot make.
-          h('span', {
-            className: `dsh-gw-dot${!current.status ? ' dsh-gw-dot-unknown' : current.status.dirty ? '' : ' dsh-gw-dot-clean'}`,
-          }),
-          h('span', { className: 'dsh-gw-subjtext' }, compactPath(current.path)))
-      : null,
-    h('label', { className: 'dsh-gw-check', title: '显示远程分支引用，并包含仅存在于远程的提交' },
-      h('input', {
-        type: 'checkbox', checked: showRemote,
-        onChange: (event) => setShowRemote(event.target.checked),
-      }), 'Show Remote Branches'),
-    h('span', { className: 'dsh-gw-spacer' }),
-    operations ? h('button', {
-      type: 'button', className: 'dsh-gw-btn', title: '新建 worktree',
-      onClick: () => setShowCreate((value) => !value),
-    }, '＋ 新建') : null,
+        })
+      : h('span', { className: 'dsh-gw-wt-placeholder', title: state.status === 'failed' ? '仓库不可用' : '正在读取工作树' },
+        state.status === 'failed' ? '仓库不可用' : '读取中…'),
     h('div', { className: 'dsh-gw-icons' },
       h('button', {
-        type: 'button', className: 'dsh-gw-iconbtn', title: showGraph ? '隐藏提交图列' : '显示提交图列',
-        onClick: () => setShowGraph((value) => !value),
-      }, h(GraphToggleIcon)),
+        type: 'button', className: 'dsh-gw-iconbtn',
+        title: showRemote ? '包含远端分支；点击仅显示本地分支' : '仅显示本地分支；点击包含远端分支',
+        'aria-label': '包含远端分支', 'aria-pressed': showRemote,
+        onClick: () => setShowRemote((value) => !value),
+      }, h(RemoteCloudIcon, { hidden: !showRemote })),
       h('button', {
         type: 'button', className: 'dsh-gw-iconbtn', title: '重新读取',
-        disabled: state.status === 'loading',
+        'aria-label': '重新读取',
         onClick: () => {
           setState((previous) => ({ ...previous, status: 'loading', resolved: false, error: null }));
           setReloadKey((key) => key + 1);
           setOpenKey(null);
         },
-      }, h('svg', { width: 14, height: 14, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', strokeWidth: 1.5 },
-        h('path', { d: 'M13 8a5 5 0 1 1-1.6-3.7M13 2v3h-3' })))));
+      }, h(IconRefreshOutlineRegular))));
 
   const head: React.ReactNode[] = [];
   head.push(toolbar);
-
-  if (operations && showCreate) {
-    head.push(h('form', {
-      className: 'dsh-gw-form', key: 'create',
-      onSubmit: (event) => { event.preventDefault(); void createWorktree(); },
-    },
-      h('input', {
-        className: 'dsh-gw-input', value: newPath, placeholder: '新 worktree 路径', required: true,
-        onChange: (event) => setNewPath(event.target.value),
-      }),
-      h('input', {
-        className: 'dsh-gw-input', value: newBranch, placeholder: '新分支名', required: true,
-        onChange: (event) => setNewBranch(event.target.value),
-      }),
-      h('button', { type: 'submit', className: 'dsh-gw-btn' }, '创建')));
-  }
 
   if (state.error) head.push(h('div', { className: 'dsh-gw-error', key: 'error' }, state.error));
   if (state.status === 'loading') head.push(h('div', { className: 'dsh-gw-msg', key: 'loading' }, '读取仓库中…'));
 
   const grid: React.ReactNode[] = [];
-  grid.push(h('div', { className: 'dsh-gw-hrow', key: 'hrow', style: { '--dsh-gw-cols': columns } },
-    showGraph ? h('div', { className: 'dsh-gw-hcell' }, 'Graph') : null,
-    h('div', { className: 'dsh-gw-hcell' }, 'Description'),
-    showDate ? h('div', { className: 'dsh-gw-hcell' }, 'Date') : null,
-    showAuthor ? h('div', { className: 'dsh-gw-hcell' }, 'Author') : null,
-    showCommit ? h('div', { className: 'dsh-gw-hcell' }, 'Commit') : null));
 
   // The working tree rides the graph as its own row, above the newest commit.
   // A clean worktree has nothing to show, so the row is absent instead of
@@ -1545,10 +1449,8 @@ function WorktreeTab(props) {
           h('button', { type: 'button', className: 'dsh-gw-btn dsh-gw-danger', onClick: () => void applyPreview() }, `Apply ${preview.operation}`)))) : null);
 }
 
-function WorktreeTitle(props) {
-  const info = typeof props.tabInfo === 'function' ? props.tabInfo() : null;
-  const branch = info && info.tab && info.tab.navigation ? info.tab.navigation.params.branch : null;
-  return h('span', { className: 'dsh-gw-subjtext' }, branch ? `Git · ${branch}` : 'Git Worktree');
+function WorktreeTitle() {
+  return h(React.Fragment, null, h(IconBranchOutlineRegular, { size: 16 }), WORKTREE_TAB_TITLE);
 }
 
 const GuideIcon = () => h('svg', {
@@ -1560,4 +1462,4 @@ const GuideIcon = () => h('svg', {
   h('circle', { cx: 12, cy: 8, r: 2 }),
   h('path', { d: 'M4 6v4M6 4h3a3 3 0 0 1 3 3v1' }));
 
-export { Boundary, GuideIcon, WorktreeTab, WorktreeTitle, configureView };
+export { Boundary, GuideIcon, WorktreeTab, WorktreeTitle, WORKTREE_TAB_TITLE, configureView };

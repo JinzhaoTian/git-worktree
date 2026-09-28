@@ -27,6 +27,8 @@ await build({
 // time, so the bundle is wrapped in the one call that registers it. `react` stays
 // external and is resolved through the loader's own module table — the host
 // renders this component, so a second copy of React would break its hooks.
+// The built-in UI primitives are also resolved there, giving this tab the
+// same PathLabel and refresh artwork as the Files tab.
 await build({
   entryPoints: [resolve(root, 'src/client.ts')],
   outfile: resolve(root, 'lib/client.js'),
@@ -34,7 +36,7 @@ await build({
   format: 'cjs',
   platform: 'browser',
   target: 'es2022',
-  external: ['react'],
+  external: ['react', '@deepseek-ai/dsh-client-ui-primitives'],
   minify: false,
   legalComments: 'inline',
   logLevel: 'warning',
