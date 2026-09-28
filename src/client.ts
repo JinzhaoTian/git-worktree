@@ -10,8 +10,8 @@
  * DSH tab.
  */
 import * as React from 'react';
-import { Boundary, GuideIcon, WorktreeTab, WorktreeTitle, configureView } from '../../../src/ui/worktree.js';
-import type { ViewParams, ViewTransport } from '../../../src/ui/worktree.js';
+import { Boundary, GuideIcon, WorktreeTab, WorktreeTitle, configureView } from './ui/worktree.js';
+import type { ViewParams, ViewTransport } from './ui/worktree.js';
 
 // Map the shared panel's theme variables to the DSH host. The panel owns no
 // DSH token names, so another platform can provide its own mapping.
@@ -33,7 +33,7 @@ const DSH_THEME_CSS = `
 
 const API = '/dsh-git-worktree/api';
 const KIND = 'git-worktree';
-const NS = '@local/dsh-git-worktree';
+const NS = '@JinzhaoTian/git-worktree-graph';
 
 /**
  * One API read over the route the host half registered.

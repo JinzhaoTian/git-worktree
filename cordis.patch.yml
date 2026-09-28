@@ -1,6 +1,6 @@
 - insert:
     - id: git-worktree
-      name: '@local/dsh-git-worktree'
+      name: '@JinzhaoTian/git-worktree-graph'
       config:
         defaultRepo: null
         commitLimit: 120

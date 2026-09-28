@@ -1,29 +1,81 @@
-# Git Worktree integrations
+# Git Worktree
 
-Git worktree parsing, history operations, and a React view live at the repository root. Platform integrations live under `integrations/`; the current DSH integration mounts the view as a native right-sidebar tab in DeepSeek Harness.
+A native DSH plugin. It puts a Git worktree browser in a right-sidebar tab of the
+Harness Web UI: the current workspace's worktrees, branches, a paged commit
+graph, commit and uncommitted details, and guarded worktree/rebase/cherry-pick
+actions. The tab follows the calling Session's workspace.
 
-## Structure
+## Layout
 
-| Path | Purpose |
+| Path | Role |
 | --- | --- |
-| `src/core/` | Platform-independent Git commands, worktree and graph readers, diff readers, history operations, and payload types |
-| `src/ui/worktree.ts` | Reusable React panel and transport contract |
-| `integrations/dsh-plugin/src/` | DSH host route and right-sidebar client registration |
-| `integrations/dsh-plugin/scripts/` | DSH build and verification scripts |
-| `integrations/dsh-plugin/` | Installable DSH bundle manifest, patch, and generated host/client files |
+| `src/index.ts` | Host half — the same-origin HTTP route and its Git payloads |
+| `src/client.ts` | Browser half — the right-sidebar tab registration and transport |
+| `src/core/` | Git core: fixed-argument `execFile` bindings, worktree/ref/graph/diff readers, history operations |
+| `src/ui/worktree.ts` | React panel and its `--gw-*` theme variables |
+| `lib/index.js`, `lib/client.js` | Built host and browser halves; committed |
+| `scripts/build.mjs` | esbuild bundling of both halves |
+| `cordis.patch.yml` | The one Loader row this plugin inserts |
 
-The host runs Git through `child_process.execFile` with fixed argument arrays. History changes require a clean, active worktree. A preview changes nothing; its plan expires after five minutes, can be attempted once, and is rechecked against the branch, HEAD, and target before applying.
+`lib/` is build output. Edit `src/`, then rebuild and commit both.
 
-## Build and verify
+## Build
 
 Requires Node 20+ and Git:
 
 ```sh
-npm ci
-npm run build:dsh
-npm run check
+npm install
+npm run check   # typecheck, then build
 ```
 
-`npm run build:dsh` refreshes the checked-in `integrations/dsh-plugin/index.js` and `integrations/dsh-plugin/client.js`. A fresh checkout already contains the runtime files needed to install the DSH bundle. `npm run check` type-checks the core, view, and DSH adapter, runs the DSH bundle verification, and measures the panel geometry in headless Chrome or Edge. Every command scoped to this integration carries the `:dsh` suffix; `typecheck:dsh` covers the shared view plus both plugin halves, and each step can be run alone with `build:dsh`, `typecheck:dsh`, `verify:dsh`, or `geometry:dsh`. Set `GIT_WORKTREE_BROWSER` if browser discovery needs an explicit executable.
+`npm run build` writes `lib/index.js` and `lib/client.js`. The manifest declares
+no runtime dependencies, so an install fetches and builds nothing.
 
-See [integrations/dsh-plugin/README.md](integrations/dsh-plugin/README.md) for installation and use in DeepSeek Harness.
+## Install
+
+Install this directory as a bundle through the `plugin_manager` tool
+(`action: install_bundle`, `target: <this repository>`). Then add it to the
+profile's enable list — `dsh.profile.bundles` in `<profile>/package.json` — or it
+will not load after a restart:
+
+```json
+"bundles": ["@deepseek-ai/dsh-base", "@deepseek-ai/dsh-web-app", "@JinzhaoTian/git-worktree-graph"]
+```
+
+With `patchReload: "live"` the running Host picks the change up. Confirm with
+`plugin_manager list_plugins`: an `include:git-worktree` row for
+`@JinzhaoTian/git-worktree-graph` with `fiberPhase: "active"`.
+
+## Use
+
+- Open the tab from the tab strip's `+` guide, or its `Git Worktree` card.
+- The toolbar names the worktree the Session sits in; refresh re-reads worktrees
+  and status. The dot is amber while dirty, green when clean, and the error
+  colour when the Host could not read it.
+- Rows draw the worktree chip and local branches only. Expanding a commit or the
+  uncommitted row shows metadata plus a changed-file tree; the file list is
+  capped and scrolls on its own. `Show Remote Branches` scopes the graph walk.
+- Guarded writes create a worktree or rebase/cherry-pick after a preview and an
+  Apply. A preview changes nothing; its plan expires after five minutes, can be
+  attempted once, and is rechecked against the branch, HEAD and target.
+- The panel never checks out a branch and never changes the Session's working
+  directory.
+
+## Route
+
+The host half owns Git and registers `/dsh-git-worktree/api` on the Web GUI's own
+server, so the tab reads the same origin — no token, no CORS, no second port.
+
+Reads are `GET /dsh-git-worktree/api/<action>`: `worktrees`, `graph`, `diff`,
+`commit`, `uncommitted`. Writes are `POST` with a JSON body: `worktree-create`,
+`rebase-preview`, `rebase-apply`, `cherry-pick-preview`, `cherry-pick-apply`. A
+write is refused with 403 when it names another origin and 415 when it does not
+declare `application/json`. Every Git bind is a fixed argument array through
+`execFile`; a Git failure returns `{ "ok": false, "error": "…" }` with HTTP 200,
+because the tab renders it inline.
+
+## Limits
+
+- Merge and commit are not implemented; rebase and cherry-pick are.
+- The graph is a deterministic lane layout drawn as row-local SVG, newest →
+  oldest; appending a page never moves a row that is already drawn.

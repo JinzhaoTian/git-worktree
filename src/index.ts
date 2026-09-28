@@ -10,23 +10,23 @@
  * as long as this plugin and disappears with it.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { repoRoot } from '../../../src/core/git.js';
-import { graphPayload as readGraph } from '../../../src/core/graph.js';
+import { repoRoot } from './core/git.js';
+import { graphPayload as readGraph } from './core/graph.js';
 import {
   commitDetailPayload as readCommitDetail,
   diffPayload as readDiff,
   parseNumstat,
   uncommittedPayload as readUncommitted,
-} from '../../../src/core/diff.js';
-import { worktreesPayload as readWorktrees } from '../../../src/core/worktrees.js';
-import { applyPlan, createWorktree, previewCherryPick, previewRebase } from '../../../src/core/operations.js';
+} from './core/diff.js';
+import { worktreesPayload as readWorktrees } from './core/worktrees.js';
+import { applyPlan, createWorktree, previewCherryPick, previewRebase } from './core/operations.js';
 import type {
   CommitDetailPayload,
   DiffPayload,
   GraphPayload,
   UncommittedPayload,
   WorktreesPayload,
-} from '../../../src/core/types.js';
+} from './core/types.js';
 
 const ROUTE = '/dsh-git-worktree/api';
 

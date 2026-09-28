@@ -10,5 +10,5 @@
     "types": ["node"],
     "lib": ["ES2022", "DOM"]
   },
-  "include": ["src/ui/worktree.ts"]
+  "include": ["src/client.ts", "src/ui/**/*.ts"]
 }
