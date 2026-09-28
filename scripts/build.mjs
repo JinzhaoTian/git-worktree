@@ -12,6 +12,7 @@ for (const [entry, outfile] of [
     format: "iife",
     platform: "browser",
     target: "es2022",
+    jsx: "automatic",
     write: false,
     outfile,
     minify: true

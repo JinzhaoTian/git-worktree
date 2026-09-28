@@ -16,7 +16,12 @@ export function registerWorktreeTools(server: McpServer, graphUri: string): void
     description: "List all worktrees in a repository and open the interactive commit graph UI. Pass repoPath when the server's working directory is not the target repository.",
     inputSchema: { repoPath: z.string().optional() },
     annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
-    _meta: { ui: { resourceUri: graphUri } }
+    _meta: {
+      ui: { resourceUri: graphUri },
+      // Keep the MCP Apps field above as canonical. Some OpenAI surfaces still
+      // discover tool UIs through the Apps SDK compatibility alias.
+      "openai/outputTemplate": graphUri
+    }
   }, async ({ repoPath }) => {
     try { return result(await worktreesPayload(repoPath)); }
     catch (error) { return failure(error); }
