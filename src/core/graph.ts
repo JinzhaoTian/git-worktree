@@ -2,9 +2,7 @@
  * The commit graph: which commits exist, how they are wired, and which refs a
  * row may draw.
  *
- * One walk answers both halves: the DSH panel pages it with `limit`/`skip`, and
- * the MCP tools read the same shape, so a lane drawn in one view means the same
- * thing in the other.
+ * One walk answers the DSH panel's paged history requests with `limit`/`skip`.
  */
 import { git } from './git.js';
 import { FIELD, RECORD } from './format.js';

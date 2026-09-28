@@ -3,8 +3,8 @@
  *
  * Owns every Git call and answers the browser half over one same-origin HTTP
  * route on the DSH Web GUI's own server. The Git work itself lives in
- * `src/core`, shared with the Codex/MCP host, so this file is only the DSH
- * policy: which Session a read belongs to, and how a route maps to a payload.
+ * `src/core`; this file supplies the DSH policy: which Session a read belongs
+ * to, and how a route maps to a payload.
  *
  * The route is registered through `ctx.webServer.register`, so it lives exactly
  * as long as this plugin and disappears with it.
@@ -265,10 +265,9 @@ function mergedQuery(params: URLSearchParams, body: Record<string, unknown>): Qu
 /**
  * Register the Git surface on the Web GUI's own HTTP server.
  *
- * Reads are `GET` and answer the shared payloads. Writes are `POST` with a JSON
- * body, and they drive exactly the same plan/readiness code the Codex tools do:
- * a preview returns an expiring one-use plan, and an apply re-reads the worktree
- * before it touches anything.
+ * Reads are `GET` and answer the core payloads. Writes are `POST` with a JSON
+ * body. A preview returns an expiring one-use plan, and an apply re-reads the
+ * worktree before it touches anything.
  *
  * @param ctx - Host context carrying the webserver service.
  * @param config - this bundle row's config.

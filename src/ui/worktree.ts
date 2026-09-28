@@ -1,19 +1,14 @@
 /**
- * Git Worktree — the shared view.
+ * Git Worktree — the DSH right-sidebar view.
  *
- * One React view for both containers: the DSH right-sidebar tab and the Codex
- * MCP app. It renders the worktree list, the multi-lane commit graph, the
- * working tree's own row and an expanded commit's details.
+ * Renders the worktree list, the multi-lane commit graph, the working tree's
+ * own row and an expanded commit's details.
  *
- * The view owns no transport. `configureView` installs the container's reader —
- * a same-origin HTTP route in DSH, the tool bridge in Codex — and every read
- * arrives as the shared payload contract in `src/core/types.ts`.
+ * `configureView` installs the DSH same-origin HTTP reader. Every read arrives
+ * as the payload contract in `src/core/types.ts`.
  *
- * The render bodies are kept as they were when this view lived in the DSH
- * browser half. That half is checked by source text in `dsh-plugin/verify.mjs`
- * and `dsh-plugin/geometry.mjs`, so this file stays `h(...)`-based rather than
- * JSX and keeps its function order, its constants and its stylesheet compatible
- * with those checks.
+ * The DSH bundle checks its render tree and geometry, so this file stays
+ * `h(...)`-based and keeps its stylesheet compatible with those checks.
  */
 import * as React from 'react';
 import type {
@@ -31,7 +26,7 @@ import type {
 
 // `React.createElement`, kept permissive on purpose: the render tree below is a
 // transcription of hand-written element calls, and the types this view earns its
-// keep from are the payloads, the panel state and the container transport — not
+// keep from are the payloads, the panel state and the DSH transport — not
 // each leaf element's attribute list.
 const h = React.createElement as (type: any, props?: any, ...children: any[]) => any;
 
@@ -218,10 +213,7 @@ const viewState = new Map();
 /**
  * One API read.
  *
- * The read belongs to the container, not to the view: the DSH bundle answers it
- * over the same-origin route it registered, and the Codex app over its tool
- * bridge. Both answer with the same payload contract, so nothing below learns
- * which container it is mounted in.
+ * The DSH host answers reads over the same-origin route it registered.
  */
 type ViewAction = 'worktrees' | 'graph' | 'diff' | 'commit' | 'uncommitted';
 
@@ -232,11 +224,9 @@ export type ViewParams = Record<string, string | number | boolean | null | undef
 export interface ViewCreatedWorktree { created: boolean; path: string; branch: string; head: string }
 
 /**
- * The writes a container may offer.
+ * The writes the host may offer.
  *
- * Absent means the panel is read-only there. A container that offers them gets
- * the panel's own controls; one that does not renders no trace of them, which is
- * what lets one view sit in two containers with different powers.
+ * Absent means the panel is read-only and hides its write controls.
  */
 export interface ViewOperations {
   createWorktree(params: ViewParams): Promise<ViewCreatedWorktree>;
@@ -246,20 +236,20 @@ export interface ViewOperations {
   cherryPickApply(params: ViewParams): Promise<unknown>;
 }
 
-/** The container's reads, keyed by the action the view asks for. */
+/** The DSH host's reads, keyed by the action the view asks for. */
 export interface ViewTransport {
   worktrees(params: ViewParams, sessionId: string | null, signal?: AbortSignal): Promise<WorktreesPayload>;
   graph(params: ViewParams, sessionId: string | null, signal?: AbortSignal): Promise<GraphPayload>;
   diff(params: ViewParams, sessionId: string | null, signal?: AbortSignal): Promise<DiffPayload>;
   commit(params: ViewParams, sessionId: string | null, signal?: AbortSignal): Promise<CommitDetailPayload>;
   uncommitted(params: ViewParams, sessionId: string | null, signal?: AbortSignal): Promise<UncommittedPayload>;
-  /** Present only where the container can change history. */
+  /** Present when the host can change history. */
   operations?: ViewOperations;
 }
 
 let transport: ViewTransport | null = null;
 
-/** Install the container's reads. Called once by whichever half mounts this view. */
+/** Install the DSH host's reads before mounting this view. */
 function configureView(next: ViewTransport): void {
   transport = next;
 }
@@ -1220,8 +1210,7 @@ function WorktreeTab(props) {
     setOpenKey((current) => (current === key ? null : key));
   }, []);
 
-  // What this container can change, or null when it is read-only. The view never
-  // asks which container it is in; it asks what the container was given.
+  // The controls appear only when the host supplied history operations.
   const operations = transport && transport.operations ? transport.operations : null;
 
   /** Ask for a plan and show it. Nothing runs until Apply. */

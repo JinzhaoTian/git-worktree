@@ -2,12 +2,12 @@
  * The DSH bundle's browser half.
  *
  * Registers one right-sidebar tab type (`kind: 'git-worktree'`) plus its body and
- * chip title, and installs the transport the shared view reads through: one
+ * chip title, and installs the transport the view reads through: one
  * same-origin route on the Web GUI's own server, registered by this bundle's host
  * half. Nothing here runs a command or touches disk.
  *
- * The view itself lives in `src/ui/worktree.ts`; this file is only what makes
- * it a DSH tab rather than a Codex MCP app.
+ * The view itself lives in `src/ui/worktree.ts`; this file registers it as a
+ * DSH tab.
  */
 import * as React from 'react';
 import { Boundary, GuideIcon, WorktreeTab, WorktreeTitle, configureView } from '../ui/worktree.js';

@@ -2,8 +2,7 @@
  * Worktree listing and selection.
  *
  * `git worktree list --porcelain -z` is the only source of worktree truth; the
- * parser here is shared so the DSH panel and the MCP tools cannot disagree about
- * what a worktree is.
+ * parser here gives the DSH panel one consistent account of every worktree.
  */
 import { realpath } from 'node:fs/promises';
 import { resolve } from 'node:path';

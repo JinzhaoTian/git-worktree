@@ -1,13 +1,8 @@
 # Git Worktree as a DSH plugin
 
 A persistent DSH bundle that puts the Git worktree browser in a **native right-sidebar
-tab** of the Harness Web UI, instead of a separate loopback browser tab.
-
-This is the replacement for the Codex route in the repository root: Codex exposes no
-docked right-sidebar API, so that version had to open its own HTTP server and ask the
-user to open a URL. DSH exposes a real tab-type system, so the same view renders as a
-React component inside the application, follows the host theme, and survives page
-reloads with the Session.
+tab** of the Harness Web UI. It renders as a React component inside the application,
+follows the host theme, and survives page reloads with the Session.
 
 ## What exists
 
@@ -21,17 +16,17 @@ This directory holds only what is installed: the manifest, the patch, and the tw
 halves. Its checks live in the repository's `scripts/` directory, because they are
 development tools rather than part of the bundle.
 
-`index.js` and `client.js` are **not committed** — they are build output, ignored the same
-way `dist/` is. The profile installs this directory by linking to it, so the files must
+`index.js` and `client.js` are **not committed** — they are ignored build output.
+The profile installs this directory by linking to it, so the files must
 exist here when it is installed, which is what the build step below produces.
 
 The two artifacts are build output. Their sources are:
 
 | Source | Role |
 | --- | --- |
-| `../src/core/` | The shared Git core: every `execFile` bind, worktree parsing, refs, the paged graph, and the numstat/diff readers |
+| `../src/core/` | The Git core: every `execFile` bind, worktree parsing, refs, the paged graph, and the numstat/diff readers |
 | `../src/dsh/host.ts` | This bundle's host policy: Session→workspace resolution, the HTTP route, and the payload mapping |
-| `../src/ui/worktree.ts` | The shared React view, transport-injected, mounted here and by the Codex/MCP app |
+| `../src/ui/worktree.ts` | The React view mounted by the DSH client |
 | `../src/dsh/client.ts` | This bundle's browser policy: the same-origin transport and the tab registration |
 | `../scripts/build-dsh.mjs` | esbuild: bundles both halves into this directory, unminified and without runtime dependencies |
 | `../scripts/verify-dsh.mjs` | Pre-install checks: parses both halves, validates the manifest and patch, exercises the layout and rendering |
@@ -74,8 +69,8 @@ A write is refused with HTTP 403 when it names another origin and with HTTP 415 
 does not declare `application/json`. That pair is the whole guard: this route is
 same-origin and token-less, a cross-site request cannot set that content type without a
 preflight, and this route answers no preflight. The writes themselves are the same
-`src/core/operations.ts` code the Codex tools call, so the readiness checks, the plan
-lifetime and the apply-time rechecks are identical in both containers.
+`src/core/operations.ts` code used by the panel, including the readiness checks,
+plan lifetime, and apply-time rechecks.
 
 A Git failure is returned as `{ "ok": false, "error": "…" }` with HTTP 200, because a
 broken worktree is an answer the tab renders, not a transport error.

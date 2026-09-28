@@ -1,9 +1,7 @@
 /**
- * The Git payload contract, shared by every host and every view.
+ * The Git payload contract between the DSH host and its view.
  *
- * One description of what a repository read answers, so the DSH bundle's HTTP
- * route, the Codex MCP tools, and both browser halves cannot drift apart. Field
- * names are wire names: the browser halves read them verbatim.
+ * Field names are wire names: the browser half reads them verbatim.
  */
 
 /** One entry of `git worktree list --porcelain -z`. */

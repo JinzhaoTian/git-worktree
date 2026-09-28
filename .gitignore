@@ -1,5 +1,4 @@
 node_modules/
-dist/
 .DS_Store
 
 # One-off snapshots a file writer leaves beside the file it rewrote, e.g.
@@ -7,7 +6,7 @@ dist/
 # git status or get published with the package.
 *~[0-9A-Za-z]*.TMP
 
-# The DSH bundle's two halves are build output, like dist/: `npm run build`
+# The DSH bundle's two halves are build output: `npm run build`
 # generates them from src/. The plugin directory is still what gets installed —
 # the profile links to it — but the generated files do not belong in git.
 dsh-plugin/index.js

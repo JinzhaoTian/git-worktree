@@ -2,8 +2,7 @@
  * History-changing operations: creating a worktree, and rebasing or
  * cherry-picking onto a commit.
  *
- * Both hosts drive this same code — the Codex MCP tools and the DSH panel's own
- * controls — so the guarantees cannot differ between them:
+ * The DSH panel's controls use this code for every history change:
  *
  * - nothing is planned until the worktree is provably ready for it (an active
  *   branch, clean tree, no operation already in progress);
@@ -12,9 +11,8 @@
  * - the apply re-reads the worktree, its branch, its HEAD and the target, and
  *   refuses if any of them moved since the preview.
  *
- * A plan is held in memory, which is the right lifetime: a restart of either host
- * invalidates every plan, and a plan is only meaningful within one preview/apply
- * exchange in the panel or one tool call pair.
+ * A plan is held in memory: a host restart invalidates every plan, and a plan
+ * is only meaningful within one preview/apply exchange in the panel.
  */
 import { isAbsolute, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';

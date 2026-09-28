@@ -3,7 +3,7 @@
  *
  * The plugin directory is installed into a DSH profile as-is: its manifest
  * declares no dependencies and the installer fetches nothing. So both halves are
- * bundled — the shared `src/core` and `src/ui` code is compiled in rather than
+ * bundled — the `src/core` and `src/ui` code is compiled in rather than
  * resolved at runtime — and neither is minified, because the pre-install check
  * reads the built host half and drives the built browser half.
  */
