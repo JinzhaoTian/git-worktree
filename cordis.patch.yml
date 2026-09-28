@@ -1,5 +1,5 @@
 - insert:
-    - id: git-worktree
+    - id: git-worktree-graph
       name: '@JinzhaoTian/git-worktree-graph'
       config:
         defaultRepo: null

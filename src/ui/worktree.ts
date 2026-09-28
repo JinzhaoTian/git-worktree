@@ -455,7 +455,7 @@ function layoutLanes(nodes: GraphNode[]): LaneLayout {
     // invalid `grid-template-columns` the panel cannot lay out — which fails
     // as a silent stack of one-cell rows rather than as anything readable.
     if (!Number.isInteger(edge.fromLane) || !Number.isInteger(edge.toLane)) {
-      throw new Error(`git-worktree: lane layout left edge ${edge.from}→${edge.parent} without a column`);
+      throw new Error(`git-worktree-graph: lane layout left edge ${edge.from}→${edge.parent} without a column`);
     }
     width = Math.max(width, edge.fromLane + 1, edge.toLane + 1);
   }

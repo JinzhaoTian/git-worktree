@@ -1,7 +1,7 @@
 /**
  * The DSH bundle's browser half.
  *
- * Registers one right-sidebar tab type (`kind: 'git-worktree'`) plus its body and
+ * Registers one right-sidebar tab type (`kind: 'git-worktree-graph'`) plus its body and
  * chip title, and installs the transport the view reads through: one
  * same-origin route on the Web GUI's own server, registered by this bundle's host
  * half. Nothing here runs a command or touches disk.
@@ -31,8 +31,8 @@ const DSH_THEME_CSS = `
   --gw-sidebar-fill: var(--dsw-specific-sidebar-fill);
 }`;
 
-const API = '/dsh-git-worktree/api';
-const KIND = 'git-worktree';
+const API = '/git-worktree-graph/api';
+const KIND = 'git-worktree-graph';
 const NS = '@JinzhaoTian/git-worktree-graph';
 
 /**
@@ -115,7 +115,7 @@ function apply(ctx: ClientContext): void {
       description: () => '浏览当前工作区的 worktree、分支与提交图',
       icon: GuideIcon,
     }],
-  }), 'dsh-git-worktree: tab type');
+  }), 'git-worktree-graph: tab type');
 
   ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
     name: 'sidebar.right.pane.tab',

@@ -28,7 +28,7 @@ import type {
   WorktreesPayload,
 } from './core/types.js';
 
-const ROUTE = '/dsh-git-worktree/api';
+const ROUTE = '/git-worktree-graph/api';
 
 // A restart serves the panel's first read before the Host knows the Session again.
 // Long enough to cover that window, short enough that a broken setup still reports.
@@ -346,7 +346,7 @@ export function apply(ctx: HostContext, config?: Omit<HostConfig, 'ctx'> | null)
         sendJson(res, 200, { ok: false, error: error instanceof Error ? error.message : String(error) });
       }
     },
-  }), 'dsh-git-worktree: http route');
+  }), 'git-worktree-graph: http route');
 }
 
 export const inject = ['webServer'];

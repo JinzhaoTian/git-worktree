@@ -31,6 +31,11 @@ npm run check   # typecheck, then build
 `npm run build` writes `lib/index.js` and `lib/client.js`. The manifest declares
 no runtime dependencies, so an install fetches and builds nothing.
 
+After rebuilding the **host** half, restart Harness. A plugin reload re-imports
+`lib/index.js` from cache, so `apply()` does not re-run and the HTTP route keeps
+its old value; only a new process registers the new one. The browser half is
+re-read on page load, so a reload is enough there.
+
 ## Install
 
 Install this directory as a bundle through the `plugin_manager` tool
@@ -43,7 +48,7 @@ will not load after a restart:
 ```
 
 With `patchReload: "live"` the running Host picks the change up. Confirm with
-`plugin_manager list_plugins`: an `include:git-worktree` row for
+`plugin_manager list_plugins`: an `include:git-worktree-graph` row for
 `@JinzhaoTian/git-worktree-graph` with `fiberPhase: "active"`.
 
 ## Use
@@ -63,10 +68,10 @@ With `patchReload: "live"` the running Host picks the change up. Confirm with
 
 ## Route
 
-The host half owns Git and registers `/dsh-git-worktree/api` on the Web GUI's own
+The host half owns Git and registers `/git-worktree-graph/api` on the Web GUI's own
 server, so the tab reads the same origin — no token, no CORS, no second port.
 
-Reads are `GET /dsh-git-worktree/api/<action>`: `worktrees`, `graph`, `diff`,
+Reads are `GET /git-worktree-graph/api/<action>`: `worktrees`, `graph`, `diff`,
 `commit`, `uncommitted`. Writes are `POST` with a JSON body: `worktree-create`,
 `rebase-preview`, `rebase-apply`, `cherry-pick-preview`, `cherry-pick-apply`. A
 write is refused with 403 when it names another origin and 415 when it does not
