@@ -15,7 +15,9 @@ import { graphPayload as readGraph } from './core/graph.js';
 import {
   commitDetailPayload as readCommitDetail,
   diffPayload as readDiff,
+  fileDiffPayload as readFileDiff,
   parseNumstat,
+  parseNumstatZ,
   uncommittedPayload as readUncommitted,
 } from './core/diff.js';
 import { worktreesPayload as readWorktrees } from './core/worktrees.js';
@@ -23,6 +25,7 @@ import { applyPlan, createWorktree, previewCherryPick, previewRebase } from './c
 import type {
   CommitDetailPayload,
   DiffPayload,
+  FileDiffPayload,
   GraphPayload,
   UncommittedPayload,
   WorktreesPayload,
@@ -199,7 +202,22 @@ export async function uncommittedPayload(query: QueryLike, config: HostConfig): 
   return readUncommitted(root, text(query.get('worktree')));
 }
 
-export { parseNumstat };
+/**
+ * One changed file's patch: inside the commit `oid` names, or — with no `oid` —
+ * in the worktree's own uncommitted change.
+ */
+export async function fileDiffPayload(query: QueryLike, config: HostConfig): Promise<FileDiffPayload> {
+  const root = await resolveRepo(query, settingsOf(config));
+  return readFileDiff(root, {
+    worktree: text(query.get('worktree')),
+    path: text(query.get('path')) || '',
+    oid: text(query.get('oid')),
+    // The path a rename moved the file away from, when the file list knew one.
+    from: text(query.get('from')),
+  });
+}
+
+export { parseNumstat, parseNumstatZ };
 
 /** How much of a write request body is read before it is refused. */
 const MAX_BODY_BYTES = 64 * 1024;
@@ -281,6 +299,7 @@ export function apply(ctx: HostContext, config?: Omit<HostConfig, 'ctx'> | null)
     diff: diffPayload,
     commit: commitDetailPayload,
     uncommitted: uncommittedPayload,
+    'file-diff': fileDiffPayload,
   };
 
   const writers: Record<string, (query: QueryLike, config: HostConfig) => Promise<unknown>> = {

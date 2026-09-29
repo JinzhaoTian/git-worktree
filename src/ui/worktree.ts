@@ -5,22 +5,50 @@
  * own row and an expanded commit's details.
  *
  * `configureView` installs a platform transport. Every read arrives as the
- * payload contract in `src/core/types.ts`. The host maps the `--gw-*` theme
- * variables to its own colors.
+ * payload contract in `src/core/types.ts`. Its styles consume DSH theme tokens.
  *
  * The DSH integration checks its render tree and geometry, so this file stays
- * `h(...)`-based and keeps its stylesheet compatible with those checks.
+ * `h(...)`-based.
  */
 import * as React from 'react';
+import clsx from 'clsx';
 import {
+  Button,
+  FileTypeIcon,
+  classifyFileType,
+  languageForPath,
+  useCodeHighlighter,
+  writeClipboard,
   IconBranchOutlineRegular,
+  IconChevronsUpDownOutlineRegular,
+  IconCompareSplitOutlineRegular,
+  IconCopyOutlineRegular,
+  IconEllipsisOutlineRegular,
+  IconFolderCloseRegular,
+  IconFolderOpenRegular,
+  IconNowrapFillRegular,
   IconRefreshOutlineRegular,
+  IconRightUpOutlineRegular,
+  IconWrapLinesOutlineRegular,
+  Menu,
+  Modal,
   PathLabel,
 } from '@deepseek-ai/dsh-client-ui-primitives';
+import type { HighlightSpan } from '@deepseek-ai/dsh-client-ui-primitives';
+import styles from './worktree.module.css';
+
+// The build replaces this marker with esbuild's scoped CSS Module output. The
+// browser half appends it to the document head inside its own effect, so every
+// tab this plugin registers is styled whichever of them is mounted — one tab's
+// body owning the sheet meant a second tab rendered with no styles at all.
+const CSS_MODULE_TEXT = '__DSH_GIT_WORKTREE_GRAPH_STYLESHEET__';
 import type {
   ChangedFile,
   CommitDetailPayload,
   DiffPayload,
+  FileDiffHunk,
+  FileDiffLine,
+  FileDiffPayload,
   GraphRef,
   OperationPreview,
   GraphNode,
@@ -34,12 +62,27 @@ import type {
 // transcription of hand-written element calls, and the types this view earns its
 // keep from are the payloads, the panel state and the transport — not
 // each leaf element's attribute list.
-const h = React.createElement as (type: any, props?: any, ...children: any[]) => any;
+const h = (type: any, props?: any, ...children: any[]): any => {
+  // The render tree keeps its readable class names; CSS Modules scopes them
+  // when they reach a DOM node or a primitive's className prop.
+  const className = props?.className;
+  const resolved = typeof className === 'string'
+    ? { ...props, className: clsx(className.split(/\s+/).map((name) => styles[name] || name)) }
+    : props;
+  return React.createElement(type, resolved, ...children);
+};
 
 const WORKTREE_TAB_TITLE = 'Git Worktree Graph';
+// The tab a changed file opens. It is a page of its own — one reused tab that
+// follows whichever file was opened last — so it is named by kind, never by an
+// address the panel would have to compose.
+const FILE_DIFF_KIND = 'git-worktree-graph-file-diff';
+const FILE_DIFF_TITLE = 'File diff';
 
 const PAGE = 300;
-const ROW = 26;
+// The built-in Files sidebar uses a 13px/1.5 line with 5px vertical padding:
+// a 30px row. Graph geometry must use the same pitch as its CSS rows.
+const ROW = 30;
 const COL = 14;
 const PAD = 10;
 const MARGIN = 8;
@@ -48,17 +91,35 @@ const MARGIN = 8;
 // parents of one commit cannot draw their crossings over each other.
 const CROSS_NEAR = 7;
 const CROSS_FAR = ROW - 7;
-// Width breakpoints, measured on the panel itself.
-const W_DATE = 560;
-const W_AUTHOR = 700;
-const W_COMMIT = 820;
-const W_DETAIL_SPLIT = 680;
+// All visible text columns contract to these minimums before one is hidden.
+// The graph itself can widen as branches gain lanes, so its width is deducted
+// before deciding which text columns fit.
+const COLUMN_GUTTER = 24;
+const DESCRIPTION_MIN = 280;
+const DATE_MIN = 116;
+const AUTHOR_MIN = 112;
+const DATE_MAX = 164;
+const AUTHOR_MAX = 164;
+// Measured on the space after the graph rail, where the detail actually lives.
+const DETAIL_TWO_COLUMN_MIN = 620;
 // An expanded detail is capped as a share of the panel's own height, because
 // this panel is a full-height column, a split pane or a short float: without
 // a cap a long file list pushes every other commit out of view.
 const DETAIL_MAX_SHARE = 0.45;
 const DETAIL_MAX_CEILING = 420;
 const DETAIL_MAX_FLOOR = ROW * 6;
+// The two-column detail is split by a drag grip. What the drag remembers is a
+// share of the body rather than a pixel width, so the boundary keeps its
+// proportion while the panel, the sidebar or the window is resized; the share
+// is clamped so neither column can be dragged away entirely.
+const DETAIL_SHARE_MIN = 0.2;
+const DETAIL_SHARE_MAX = 0.8;
+const DETAIL_SHARE_DEFAULT = 0.5;
+// One preference per page, not one per commit: the metadata column is the same
+// column on every row, so a boundary learned on one detail is the boundary the
+// next one opens with. Only one detail is open at a time, and its own state
+// mirrors this value so a drag re-renders just that detail.
+let detailShare = DETAIL_SHARE_DEFAULT;
 // The panel's first read can arrive before a host restores its session — so it is retried
 // with a growing pause before the failure is believed.
 const RESOLVE_ATTEMPTS = 4;
@@ -67,146 +128,16 @@ const RESOLVE_BACKOFF_MS = 300;
 // Lane artwork. Literal colors are deliberate: these identify a branch, not
 // a UI surface, and each one is legible on both theme backgrounds.
 const LANE_COLORS = ['#2f8ae0', '#d0569b', '#38a169', '#d98a2b', '#8b72e0', '#0fa8ad', '#c05252', '#7a8b2f'];
-const DIFF_ADD = '#3fa34d';
-const DIFF_DEL = '#d05a4e';
-
 // Presentational choices per Session: scope and remote-ref visibility.
 const viewState = new Map();
 
-    const CSS = `
-.dsh-gw { display: flex; flex-direction: column; height: 100%; min-height: 0; font-size: 12px; color: var(--gw-label-primary); background: var(--gw-bg-base); }
-.dsh-gw * { box-sizing: border-box; }
-.dsh-gw-btn { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; gap: 4px; height: 24px; padding: 0 8px; border: 1px solid var(--gw-border-l2); border-radius: 6px; background: var(--gw-bg-layer-1); color: var(--gw-label-primary); font: inherit; cursor: pointer; }
-.dsh-gw-btn:hover:not(:disabled) { background: var(--gw-bg-layer-2); }
-.dsh-gw-btn:disabled { opacity: .5; cursor: default; }
-.dsh-gw-tbar { display: flex; align-items: center; gap: 4px; flex: 0 0 38px; width: 100%; min-width: 0; height: 38px; padding: 0 6px 0 16px; border-bottom: .5px solid var(--dsw-alias-border-l3, var(--gw-border-l1)); background: var(--gw-sidebar-fill); white-space: nowrap; }
-.dsh-gw-icons { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 2px; }
-.dsh-gw-iconbtn { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 6px; border: 0; border-radius: var(--dsw-radius-sm, 6px); background: none; color: var(--gw-label-secondary); cursor: pointer; line-height: 1; }
-.dsh-gw-iconbtn svg { width: 15px; height: 15px; }
-.dsh-gw-iconbtn:hover, .dsh-gw-iconbtn[aria-pressed=true] { background: var(--dsw-alias-interactive-bg-hover, var(--gw-bg-layer-2)); color: var(--gw-label-primary); }
-.dsh-gw-iconbtn:focus-visible { outline: 2px solid var(--gw-brand-primary); outline-offset: 1px; }
-.dsh-gw-wt { margin-right: 12px; }
-.dsh-gw-wt-placeholder { flex: 1 1 auto; min-width: 0; overflow: hidden; color: var(--gw-label-secondary); }
-.dsh-gw-dot { flex: 0 0 auto; width: 6px; height: 6px; border-radius: 50%; background: var(--gw-state-warn); }
-.dsh-gw-msg { padding: 5px 10px; color: var(--gw-label-secondary); border-bottom: 1px solid var(--gw-border-l1); }
-.dsh-gw-error { margin: 8px 10px; padding: 6px 8px; border: 1px solid var(--gw-state-error); border-radius: 6px; color: var(--gw-state-error); white-space: pre-wrap; word-break: break-word; }
-.dsh-gw-empty { padding: 16px 10px; color: var(--gw-label-secondary); text-align: center; }
-
-.dsh-gw-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; }
-.dsh-gw-grid { display: flex; flex-direction: column; min-width: 100%; }
-/* The lane is drawn as one ROW-tall slice per row, so a row's pitch has to be
-   exactly ROW and every slice has to begin at its row's top. A bottom border
-   and an inline SVG's baseline gap each add height the drawing knows nothing
-   about, and that is what left the lane visibly broken between rows. The
-   separator is an inset shadow so it costs no layout. */
-.dsh-gw-row { display: grid; grid-template-columns: var(--dsh-gw-cols); align-items: center; height: 26px; overflow: hidden; border-left: 2px solid transparent; box-shadow: inset 0 -1px 0 var(--gw-sidebar-fill); cursor: pointer; outline: none; }
-/* The layer token is the same white the panel already sits on in the light
-   theme, so an open row was marked by its left stripe alone and hovering one
-   showed nothing at all. Mixing the label colour into the layer tints darker on
-   the light theme and lighter on the dark one — the two directions "selected"
-   reads as — and stays on theme tokens instead of a fixed grey. */
-.dsh-gw-row:hover:not(.dsh-gw-row-open) { background: color-mix(in srgb, var(--gw-label-primary) 3%, var(--gw-bg-layer-1)); }
-.dsh-gw-row:focus-visible { box-shadow: inset 0 0 0 1px var(--gw-brand-primary), inset 0 -1px 0 var(--gw-sidebar-fill); }
-.dsh-gw-row-open { background: color-mix(in srgb, var(--gw-label-primary) 6%, var(--gw-bg-layer-1)); border-left-color: var(--gw-brand-primary); }
-.dsh-gw-cell { display: flex; align-items: center; min-width: 0; padding: 0 8px; }
-.dsh-gw-cell-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--gw-label-secondary); }
-.dsh-gw-cell-sec { color: var(--gw-label-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.dsh-gw-gcell { display: flex; align-self: stretch; overflow: hidden; }
-.dsh-gw-gcell svg { display: block; flex: 0 0 auto; }
-.dsh-gw-subj { display: flex; align-items: center; gap: 6px; min-width: 0; width: 100%; }
-.dsh-gw-subjtext { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dsh-gw-ref { flex: 0 0 auto; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 5px; border-radius: 4px; font-size: 11px; line-height: 16px; border: 1px solid var(--gw-border-l2); background: var(--gw-bg-layer-2); color: var(--gw-label-secondary); }
-/* A branch chip is the lane's own: tile, border, tint and now the name all come
-   from the lane colour, so one branch reads as one colour rather than as green
-   chrome around black text. */
-.dsh-gw-ref-branch, .dsh-gw-ref-remote { display: inline-flex; align-items: center; gap: 4px; padding: 0 5px 0 0; border-color: color-mix(in srgb, var(--dsh-gw-ref-color) 42%, var(--gw-border-l2)); background: color-mix(in srgb, var(--dsh-gw-ref-color) 8%, var(--gw-bg-layer-2)); color: var(--dsh-gw-ref-color); }
-.dsh-gw-ref-remote { border-style: dashed; }
-.dsh-gw-ref-icon { display: inline-flex; align-items: center; justify-content: center; align-self: stretch; width: 18px; min-width: 18px; min-height: 16px; border-radius: 3px 0 0 3px; background: var(--dsh-gw-ref-color); color: white; }
-.dsh-gw-ref-icon svg { display: block; }
-.dsh-gw-ref-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.dsh-gw-ref-remote-name { color: var(--gw-label-secondary); font-style: italic; }
-.dsh-gw-ref-current { border-color: color-mix(in srgb, var(--dsh-gw-ref-color) 68%, var(--gw-border-l2)); font-weight: 600; }
-.dsh-gw-ref-tag { color: var(--gw-state-success); }
-.dsh-gw-ref-stash { color: var(--gw-state-warn); }
-/* The worktree chip is one chip built from two cells: the inverted label (solid
-   label color — black in light mode, white in dark — with the text knocked out),
-   then the branch it holds drawn as a branch chip is. The frame belongs to the
-   chip, not to either cell, so the label colour rings the whole pair while the
-   branch name sits on its own lane-tinted surface rather than on the label's
-   black. No gap between the cells, and the frame clips them to its own corners. */
-.dsh-gw-ref-worktree { display: inline-flex; align-items: stretch; gap: 0; padding: 0; border: 1px solid var(--gw-label-primary); border-radius: 5px; overflow: hidden; background: none; font-size: 11px; }
-.dsh-gw-ref-worktree-label { display: inline-flex; align-items: center; padding: 0 7px; background: var(--gw-label-primary); color: var(--gw-bg-base); font-size: 12px; font-weight: 600; line-height: 18px; }
-.dsh-gw-ref-worktree-held { display: inline-flex; align-items: center; gap: 4px; padding: 0 7px 0 0; background: color-mix(in srgb, var(--dsh-gw-ref-color) 8%, var(--gw-bg-layer-2)); color: var(--gw-label-primary); line-height: 18px; }
-.dsh-gw-ref-worktree-icon { display: inline-flex; align-items: center; justify-content: center; align-self: stretch; width: 18px; min-width: 18px; background: var(--dsh-gw-ref-color); color: white; }
-.dsh-gw-ref-worktree-icon svg { display: block; }
-.dsh-gw-ref-worktree-name { display: inline-flex; align-items: center; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dsh-gw-ref-worktree-remote { color: var(--gw-label-secondary); font-style: italic; }
-
-.dsh-gw-uncommitted { font-weight: 600; }
-.dsh-gw-row-head { font-weight: 600; }
-.dsh-gw-row-head .dsh-gw-ref { font-weight: 400; }
-/* An expanded row keeps the graph's own column. The detail is many rows tall,
-   so no row slice can draw it: a rail beside it carries every lane across the
-   band, and the detail's text starts under the Description column instead of
-   under the lane. The 2px border matches a row's own box, so the rail lines up
-   with the graph slices above and below it. The detail also carries a tint of
-   the same recipe as the row that opened it, one step weaker: in the light theme
-   the base and the layer surface are both white, so an expanded detail used to
-   be the same white as every closed row around it. */
-.dsh-gw-detailrow { display: flex; align-items: stretch; border-left: 2px solid transparent; border-bottom: 1px solid var(--gw-border-l1); background: color-mix(in srgb, var(--gw-label-primary) 4%, var(--gw-bg-layer-1)); }
-.dsh-gw-rail { position: relative; flex: 0 0 auto; align-self: stretch; overflow: hidden; }
-.dsh-gw-rail-line { position: absolute; top: 0; bottom: 0; border-radius: 1px; }
-.dsh-gw-rail-turn { position: absolute; display: block; overflow: visible; }
-.dsh-gw-detailbody { flex: 1 1 auto; min-width: 0; }
-/* The two halves of a detail are flex columns rather than grid columns, because a
-   grid row is sized from its item's content and ignores that item's max-height:
-   capping the changed-file column there grew the row to the file list's full
-   height and left the capped column floating in empty space. A flex line's cross
-   size does respect the item's cap, so the row ends where the shorter of the two
-   halves ends — the message keeps its height, the file list stops at its cap. */
-.dsh-gw-detail { display: flex; align-items: stretch; }
-.dsh-gw-detail-narrow { flex-direction: column; }
-.dsh-gw-detail-left { flex: 1 1 0; padding: 8px 10px; min-width: 0; border-right: 1px solid var(--gw-border-l1); }
-.dsh-gw-detail-narrow .dsh-gw-detail-left { border-right: 0; border-bottom: 1px solid var(--gw-border-l1); }
-.dsh-gw-detail-narrow .dsh-gw-detail-left, .dsh-gw-detail-narrow .dsh-gw-detail-right { flex: 0 0 auto; }
-.dsh-gw-kv { display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 2px 8px; }
-.dsh-gw-k { color: var(--gw-label-secondary); }
-.dsh-gw-v { min-width: 0; overflow-wrap: anywhere; }
-.dsh-gw-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-.dsh-gw-body { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--gw-border-l1); white-space: pre-wrap; color: var(--gw-label-secondary); }
-.dsh-gw-legacy { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--gw-label-secondary); }
-/* Only the changed-file column is capped, and it scrolls on its own: the metadata
-   and the commit message beside it keep their natural height, so a long message
-   grows the block while a long file list scrolls inside its own box. The cap is
-   inherited from the row, which also carries the rail, so the lane the expanded
-   row sits on is drawn down the whole block however tall the left column gets. */
-.dsh-gw-detail-right { flex: 1 1 0; padding: 8px 10px; min-width: 0; max-height: var(--dsh-gw-detail-max); overflow: auto; }
-.dsh-gw-stat { color: var(--gw-label-secondary); margin-bottom: 6px; }
-.dsh-gw-add { color: ${DIFF_ADD}; }
-.dsh-gw-del { color: ${DIFF_DEL}; }
-.dsh-gw-ftree { display: flex; flex-direction: column; }
-.dsh-gw-frow { display: flex; align-items: center; gap: 6px; height: 19px; min-width: 0; }
-.dsh-gw-fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dsh-gw-fstat { display: inline-flex; gap: 4px; margin-left: auto; padding-left: 8px; flex: 0 0 auto; }
-.dsh-gw-menu { position: fixed; z-index: 20; display: flex; flex-direction: column; min-width: 168px; padding: 4px; border: 1px solid var(--gw-border-l2); border-radius: 6px; background: var(--gw-bg-layer-2); box-shadow: 0 6px 24px rgba(0, 0, 0, 0.28); }
-.dsh-gw-menu button { border: 0; background: none; color: var(--gw-label-primary); text-align: left; padding: 6px 8px; border-radius: 4px; font: inherit; cursor: pointer; }
-.dsh-gw-menu button:hover { background: var(--gw-bg-layer-1); }
-.dsh-gw-backdrop { position: fixed; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center; padding: 16px; background: rgba(0, 0, 0, 0.45); }
-.dsh-gw-modal { width: min(420px, 100%); max-height: 80%; overflow: auto; padding: 14px; border: 1px solid var(--gw-border-l2); border-radius: 8px; background: var(--gw-bg-base); color: var(--gw-label-primary); }
-.dsh-gw-modal h2 { margin: 0 0 8px; font-size: 13px; }
-.dsh-gw-modal p { margin: 4px 0; font-size: 11px; color: var(--gw-label-secondary); overflow-wrap: anywhere; }
-.dsh-gw-modal ol { max-height: 140px; overflow: auto; margin: 6px 0; padding-left: 20px; font-size: 11px; }
-.dsh-gw-warn { color: var(--gw-state-warn); }
-.dsh-gw-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 10px; }
-.dsh-gw-danger { border-color: var(--gw-state-error); color: var(--gw-state-error); }
-`;
 
 /**
  * One API read.
  *
  * The configured transport answers reads using its platform's route or API.
  */
-type ViewAction = 'worktrees' | 'graph' | 'diff' | 'commit' | 'uncommitted';
+type ViewAction = 'worktrees' | 'graph' | 'diff' | 'commit' | 'uncommitted' | 'file-diff';
 
 /** The parameters a read may carry; a view only ever sends what it was told to. */
 export type ViewParams = Record<string, string | number | boolean | null | undefined>;
@@ -234,6 +165,8 @@ export interface ViewTransport {
   diff(params: ViewParams, sessionId: string | null, signal?: AbortSignal): Promise<DiffPayload>;
   commit(params: ViewParams, sessionId: string | null, signal?: AbortSignal): Promise<CommitDetailPayload>;
   uncommitted(params: ViewParams, sessionId: string | null, signal?: AbortSignal): Promise<UncommittedPayload>;
+  /** One changed file's patch, read when a file row is opened. */
+  'file-diff'(params: ViewParams, sessionId: string | null, signal?: AbortSignal): Promise<FileDiffPayload>;
   /** Present when the host can change history. */
   operations?: ViewOperations;
 }
@@ -276,6 +209,10 @@ function shortOid(oid) {
   return String(oid || '').slice(0, 7);
 }
 
+function fileCount(count) {
+  return `${count} file${count === 1 ? '' : 's'}`;
+}
+
 /** Compact "24 Sep 2026 00:22" — the reference's Date column. */
 function absoluteTime(iso) {
   const date = new Date(iso);
@@ -290,16 +227,27 @@ function relativeTime(iso) {
   const then = Date.parse(iso);
   if (!Number.isFinite(then)) return '';
   const seconds = Math.max(0, Math.round((Date.now() - then) / 1000));
-  if (seconds < 60) return '刚刚';
+  if (seconds < 60) return 'just now';
   const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `${minutes} 分钟前`;
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'} ago`;
   const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours} 小时前`;
+  if (hours < 24) return `${hours} hour${hours === 1 ? '' : 's'} ago`;
   const days = Math.round(hours / 24);
-  if (days < 30) return `${days} 天前`;
+  if (days < 30) return `${days} day${days === 1 ? '' : 's'} ago`;
   const months = Math.round(days / 30);
-  if (months < 12) return `${months} 个月前`;
-  return `${Math.round(months / 12)} 年前`;
+  if (months < 12) return `${months} month${months === 1 ? '' : 's'} ago`;
+  const years = Math.round(months / 12);
+  return `${years} year${years === 1 ? '' : 's'} ago`;
+}
+
+function detailedTime(iso) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '';
+  return new Intl.DateTimeFormat('en-US', {
+    weekday: 'short', day: '2-digit', month: 'short', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+    timeZoneName: 'short',
+  }).format(date);
 }
 
 /**
@@ -533,7 +481,7 @@ function GraphCell(props) {
       children.push(h('line', {
         key: 'working-tree-link',
         x1: laneX(lane), y1: 0, x2: laneX(lane), y2: ROW / 2,
-        stroke: 'var(--gw-label-secondary)', strokeWidth: 1.6,
+        stroke: 'var(--dsw-alias-label-secondary)', strokeWidth: 1.6,
       }));
     }
     // The hollow circle always marks the newest change: the working tree
@@ -541,8 +489,8 @@ function GraphCell(props) {
     // the row background through the node.
     children.push(h('circle', {
       key: 'node', cx: laneX(lane), cy: ROW / 2, r: head ? 4.5 : 4,
-      fill: head ? 'var(--gw-bg-base)' : colors.get(lane),
-      stroke: head ? colors.get(lane) : 'var(--gw-bg-base)',
+      fill: head ? 'var(--dsw-alias-bg-base)' : colors.get(lane),
+      stroke: head ? colors.get(lane) : 'var(--dsw-alias-bg-base)',
       strokeWidth: head ? 2 : 1.6,
     }));
   }
@@ -572,7 +520,7 @@ function GraphRail(props) {
     lines.push(h('span', {
       key: 'working-tree-link',
       className: 'dsh-gw-rail-line',
-      style: { left: `${laneX(0) - 0.8}px`, width: '1.6px', background: 'var(--gw-label-secondary)' },
+      style: { left: `${laneX(0) - 0.8}px`, width: '1.6px', background: 'var(--dsw-alias-label-secondary)' },
     }));
   }
   const bandTop = (index + 1) * ROW;
@@ -663,8 +611,8 @@ function normalizeRef(ref) {
   return null;
 }
 
-/** The two icon props a glyph may carry. */
-interface GlyphProps { size?: number; flipVertical?: boolean }
+/** The icon props a local glyph may carry. */
+interface GlyphProps { size?: number; flipVertical?: boolean; className?: string }
 
 function GraphBranchGlyph(props: GlyphProps = {}) {
   const size = props.size || 14;
@@ -682,6 +630,27 @@ function GraphBranchGlyph(props: GlyphProps = {}) {
 
 function BranchRefIcon(props: GlyphProps = {}) {
   return h(GraphBranchGlyph, { ...props, flipVertical: true });
+}
+
+/**
+ * The diff tab's own mark: a box holding a plus over a minus.
+ *
+ * The icon set has no diff glyph — its nearest is a two-column compare, which
+ * says nothing about what changed — and a tab chip is read at a glance, so this
+ * draws the one shape that means "lines added and lines removed" on its own. It
+ * follows the set's conventions: a 16-unit box, no fill, one unit of stroke in
+ * `currentColor`, so it sits beside the set's icons without standing out.
+ */
+function DiffMarkGlyph(props: GlyphProps = {}) {
+  const size = props.size || 16;
+  return h('svg', {
+    width: size, height: size, viewBox: '0 0 16 16', fill: 'none',
+    stroke: 'currentColor', strokeWidth: 1, strokeLinecap: 'round', strokeLinejoin: 'round',
+    className: props.className, 'aria-hidden': true,
+  },
+    h('rect', { x: 2.25, y: 2.25, width: 11.5, height: 11.5, rx: 2.5 }),
+    h('path', { d: 'M8 5.1v2.8M6.6 6.5h2.8' }),
+    h('path', { d: 'M6.6 10.2h2.8' }));
 }
 
 /** The remote-history toggle uses one cloud silhouette in both states. */
@@ -761,7 +730,7 @@ function RefChip(props) {
           className: 'dsh-gw-ref-worktree-remote',
         }, remote.name))));
   }
-  const className = `dsh-gw-ref dsh-gw-ref-${ref.kind}${ref.current && ref.kind === 'branch' ? ' dsh-gw-ref-current' : ''}`;
+  const className = clsx('dsh-gw-ref', `dsh-gw-ref-${ref.kind}`, ref.current && ref.kind === 'branch' && 'dsh-gw-ref-current');
   const branchLike = ref.kind === 'branch' || ref.kind === 'remote';
   return h('span', {
     className,
@@ -798,50 +767,57 @@ function buildFileTree(files: ChangedFile[]): FileTreeDir {
 
 function FileTree(props) {
   const [collapsed, setCollapsed] = React.useState<Record<string, boolean>>({});
-  const { files } = props;
+  const { files, onOpen } = props;
   const root = React.useMemo(() => buildFileTree(files), [files]);
   const rows: React.ReactNode[] = [];
-  const walk = (node, depth, prefix, key) => {
+  const walk = (node, depth, prefix) => {
     const dirs = [...node.dirs.values()].sort((left, right) => left.name.localeCompare(right.name));
     for (const dir of dirs) {
       const path = prefix ? `${prefix}/${dir.name}` : dir.name;
       const isCollapsed = collapsed[path];
       const count = countFiles(dir);
-      rows.push(h('div', {
+      rows.push(h('button', {
         key: `d:${path}`,
-        className: 'dsh-gw-frow',
-        style: { paddingLeft: `${depth * 13}px` },
-        onClick: (event) => {
-          event.stopPropagation();
-          setCollapsed((current) => ({ ...current, [path]: !current[path] }));
-        },
+        type: 'button', className: 'dsh-gw-frow dsh-gw-frow-folder',
+        style: { '--dsh-gw-indent': `${depth * 18}px` },
+        'aria-expanded': !isCollapsed,
+        title: path,
+        onClick: () => setCollapsed((current) => ({ ...current, [path]: !current[path] })),
       },
-        h('span', null, isCollapsed ? '▸' : '▾'),
+        h(isCollapsed ? IconFolderCloseRegular : IconFolderOpenRegular, { className: 'dsh-gw-folder-icon', size: 16 }),
         h('span', { className: 'dsh-gw-fname' }, dir.name),
         h('span', { className: 'dsh-gw-fstat' }, h('span', { className: 'dsh-gw-stat' }, `${count}`))));
-      if (!isCollapsed) walk(dir, depth + 1, path, key);
+      if (!isCollapsed) walk(dir, depth + 1, path);
     }
     const sorted = [...node.files].sort((left, right) => left.name.localeCompare(right.name));
     for (const entry of sorted) {
       const file = entry.file;
-      rows.push(h('div', {
-        key: `f:${prefix}/${entry.name}`,
-        className: 'dsh-gw-frow',
-        style: { paddingLeft: `${depth * 13}px` },
-        title: file.path,
-      },
-        h('span', null, '·'),
-        h('span', { className: 'dsh-gw-fname' }, entry.name),
-        h('span', { className: 'dsh-gw-fstat' },
+      // A file is a control while a diff can be read for it, and a plain row
+      // while it cannot — a Host that predates the route serves neither, and a
+      // button that answers nothing is worse than no button at all.
+      const body = [
+        h(FileTypeIcon, { key: 'i', kind: classifyFileType(entry.name), size: 16, className: 'dsh-gw-file-icon' }),
+        h('span', { key: 'n', className: 'dsh-gw-fname' }, entry.name),
+        h('span', { key: 's', className: 'dsh-gw-fstat' },
           file.untracked
-            ? h('span', { className: 'dsh-gw-stat' }, '新')
+            ? h('span', { className: 'dsh-gw-stat' }, 'New')
             : [
                 h('span', { key: 'a', className: 'dsh-gw-add' }, `+${file.add}`),
                 h('span', { key: 'd', className: 'dsh-gw-del' }, `-${file.del}`),
-              ])));
+              ]),
+      ];
+      const shared = {
+        key: `f:${prefix}/${entry.name}`,
+        className: clsx('dsh-gw-frow', onOpen && 'dsh-gw-frow-file', file.binary && 'dsh-gw-frow-binary'),
+        style: { '--dsh-gw-indent': `${depth * 18}px` },
+        title: onOpen ? `${file.path} — open this file's diff in its own tab` : file.path,
+      };
+      rows.push(onOpen
+        ? h('button', { ...shared, type: 'button', onClick: () => onOpen(file) }, body)
+        : h('div', shared, body));
     }
   };
-  walk(root, 0, '', '');
+  walk(root, 0, '');
   return h('div', { className: 'dsh-gw-ftree' }, rows);
 }
 
@@ -849,6 +825,125 @@ function countFiles(node) {
   let total = node.files.length;
   for (const dir of node.dirs.values()) total += countFiles(dir);
   return total;
+}
+
+/** The clamp every write to the detail's share goes through. */
+function clampShare(share) {
+  return Math.min(DETAIL_SHARE_MAX, Math.max(DETAIL_SHARE_MIN, share));
+}
+
+/** A share as CSS reads it: three decimals, so the two tracks stay tidy. */
+function roundShare(share) {
+  return Math.round(share * 1000) / 1000;
+}
+
+/**
+ * The grip between the detail's two columns.
+ *
+ * A drag reads the pointer's position inside the grid the grip sits in and
+ * writes the left column's share of it, so nothing has to be measured ahead of
+ * time and a panel resized mid-drag still lands where the pointer is. The grip
+ * also takes the keyboard: a focused separator moves the boundary a step at a
+ * time, and a double-click restores the even split.
+ *
+ * `narrow` never reaches this component — a stacked detail has no boundary to
+ * move — so the grid it is placed in is always the two-column one.
+ */
+function DetailGrip(props) {
+  const { share, onShare } = props;
+  const [dragging, setDragging] = React.useState(false);
+  // The pointer is captured on pointerdown and every move is measured against
+  // the grid, so a fast drag that leaves the 8px strip still tracks, and a
+  // pointer that was never captured (a hover, or a drag that already ended)
+  // is ignored rather than treated as a drag.
+  const draggingPointer = (event) => {
+    const grip = event.currentTarget;
+    return typeof grip.hasPointerCapture === 'function' && grip.hasPointerCapture(event.pointerId);
+  };
+  const shareAt = (event) => {
+    const grip = event.currentTarget as HTMLElement;
+    const grid = grip.parentElement;
+    if (!grid) return;
+    const rect = grid.getBoundingClientRect();
+    const gripWidth = grip.offsetWidth || 8;
+    const usable = rect.width - gripWidth;
+    if (usable <= 0) return;
+    // The boundary sits at the grip's centre, which is where the pointer is
+    // held for the whole gesture: half the grip falls on either side of it.
+    onShare(clampShare((event.clientX - rect.left - gripWidth / 2) / usable));
+  };
+  return h('div', {
+    className: 'dsh-gw-detail-grip',
+    role: 'separator',
+    'aria-orientation': 'vertical',
+    'aria-label': 'Resize the detail columns',
+    'aria-valuenow': Math.round(share * 100),
+    'aria-valuemin': Math.round(DETAIL_SHARE_MIN * 100),
+    'aria-valuemax': Math.round(DETAIL_SHARE_MAX * 100),
+    tabIndex: 0,
+    'data-dragging': dragging ? '' : undefined,
+    onPointerDown: (event) => {
+      if (event.button !== 0) return;
+      // Keep the drag from selecting the metadata text around it, then take
+      // the pointer so the gesture survives leaving the grip.
+      event.preventDefault();
+      event.currentTarget.setPointerCapture(event.pointerId);
+      setDragging(true);
+      shareAt(event);
+    },
+    onPointerMove: (event) => { if (draggingPointer(event)) shareAt(event); },
+    onPointerUp: (event) => {
+      if (draggingPointer(event)) event.currentTarget.releasePointerCapture(event.pointerId);
+      setDragging(false);
+    },
+    onPointerCancel: () => setDragging(false),
+    onLostPointerCapture: () => setDragging(false),
+    onDoubleClick: () => onShare(DETAIL_SHARE_DEFAULT),
+    onKeyDown: (event) => {
+      const step = event.shiftKey ? 0.05 : 0.02;
+      const next = event.key === 'ArrowLeft' ? share - step
+        : event.key === 'ArrowRight' ? share + step
+          : null;
+      if (next === null) return;
+      event.preventDefault();
+      onShare(clampShare(next));
+    },
+  });
+}
+
+/** Shared metadata/files layout for commits and uncommitted changes. */
+function ExpandedDetail(props) {
+  const { narrow, primary, metadata, summary, files, body, onOpenFile } = props;
+  const [share, setShare] = React.useState(detailShare);
+  // Two columns need both halves: a detail without a summary has nothing to
+  // put on the right, and a narrow one stacks them, so neither gets a grip.
+  const split = Boolean(summary) && !narrow;
+  const updateShare = React.useCallback((next: number) => {
+    detailShare = next;
+    setShare(next);
+  }, []);
+  // Each half is its own column, so the widths are `flex` ratios rather than
+  // a grid template: a share is a proportion, and the basis of zero keeps a
+  // long path or a wide file name from claiming width its share did not.
+  const flexFor = (value: number) => (split ? { flex: `${roundShare(value)} 1 0px` } : undefined);
+
+  return h('div', {
+    className: clsx('dsh-gw-detail', narrow && 'dsh-gw-detail-narrow', !summary && 'dsh-gw-detail-single'),
+  },
+    h('div', { className: 'dsh-gw-detail-side', style: flexFor(share) },
+      h('div', { className: 'dsh-gw-detail-primary' }, primary),
+      h('div', { className: 'dsh-gw-detail-metadata' }, metadata, body)),
+    split ? h(DetailGrip, { share, onShare: updateShare }) : null,
+    summary ? h('div', { className: 'dsh-gw-detail-side', style: flexFor(1 - share) },
+      h('div', { className: 'dsh-gw-detail-summary' },
+        h('div', { className: 'dsh-gw-stat' },
+          `${fileCount(summary.changed)} changed`,
+          summary.insertions > 0 ? h('span', { className: 'dsh-gw-add' }, ` (+${summary.insertions})`) : null,
+          summary.deletions > 0 ? h('span', { className: 'dsh-gw-del' }, ` (-${summary.deletions})`) : null)),
+      h('div', { className: 'dsh-gw-detail-files' },
+        files?.length > 0
+          ? h(FileTree, { files, onOpen: onOpenFile })
+          : h('div', { className: 'dsh-gw-empty' }, 'No file changes'))) : null);
 }
 
 /** One commit read: pending, answered, or refused. `text` is the pre-structured Host's answer. */
@@ -860,7 +955,7 @@ interface CommitReadState {
 
 /** The expanded panel under a commit row: metadata beside the changed files. */
 function CommitDetail(props) {
-  const { repo, oid, sessionId, narrow } = props;
+  const { repo, oid, sessionId, narrow, onOpenFile } = props;
   const [state, setState] = React.useState<CommitReadState>({ status: 'loading' });
   React.useEffect(() => {
     const controller = new AbortController();
@@ -877,12 +972,13 @@ function CommitDetail(props) {
 
   const data = state.data;
   const legacy = data && typeof data.text === 'string' && !Array.isArray(data.parents);
-  const left = h('div', { className: 'dsh-gw-detail-left' },
-    state.status === 'loading' ? h('div', { className: 'dsh-gw-msg' }, '读取中…') : null,
+  const primary = h(React.Fragment, null,
+    state.status === 'loading' ? h('div', { className: 'dsh-gw-msg' }, 'Loading…') : null,
     state.status === 'failed' ? h('div', { className: 'dsh-gw-error' }, state.error) : null,
     legacy ? h('pre', { className: 'dsh-gw-legacy' }, data.text) : null,
     data && !legacy ? h('div', { className: 'dsh-gw-kv' },
-      h('span', { className: 'dsh-gw-k' }, 'Commit'), h('span', { className: 'dsh-gw-v dsh-gw-mono' }, data.oid),
+      h('span', { className: 'dsh-gw-k' }, 'Commit'), h('span', { className: 'dsh-gw-v dsh-gw-mono' }, data.oid)) : null);
+  const metadata = data && !legacy ? h('div', { className: 'dsh-gw-kv' },
       h('span', { className: 'dsh-gw-k' }, 'Parents'), h('span', { className: 'dsh-gw-v dsh-gw-mono' },
         data.parents.length > 0 ? data.parents.map(shortOid).join(', ') : 'None'),
       h('span', { className: 'dsh-gw-k' }, 'Author'), h('span', { className: 'dsh-gw-v' },
@@ -890,17 +986,17 @@ function CommitDetail(props) {
       h('span', { className: 'dsh-gw-k' }, 'Committer'), h('span', { className: 'dsh-gw-v' },
         `${data.committer.name} <${data.committer.email}>`),
       h('span', { className: 'dsh-gw-k' }, 'Date'), h('span', { className: 'dsh-gw-v' },
-        `${new Date(data.authoredAt).toString()} (${relativeTime(data.authoredAt)})`)) : null,
-    data && data.body ? h('div', { className: 'dsh-gw-body' }, data.body) : null);
+        `${detailedTime(data.authoredAt)} (${relativeTime(data.authoredAt)})`)) : null;
 
-  const right = h('div', { className: 'dsh-gw-detail-right' },
-    data && !legacy ? h('div', { className: 'dsh-gw-stat' },
-      `${data.summary.changed} 个文件变更`,
-      data.summary.insertions > 0 ? h('span', { className: 'dsh-gw-add' }, ` (+${data.summary.insertions})`) : null,
-      data.summary.deletions > 0 ? h('span', { className: 'dsh-gw-del' }, ` (-${data.summary.deletions})`) : null) : null,
-    data && !legacy && data.files.length > 0 ? h(FileTree, { files: data.files }) : null);
-
-  return h('div', { className: `dsh-gw-detail${narrow || legacy ? ' dsh-gw-detail-narrow' : ''}` }, left, legacy ? null : right);
+  return h(ExpandedDetail, {
+    narrow,
+    primary,
+    metadata,
+    onOpenFile: data && !legacy ? onOpenFile : undefined,
+    body: data && data.body ? h('div', { className: 'dsh-gw-body' }, data.body) : null,
+    summary: data && !legacy ? data.summary : null,
+    files: data && !legacy ? data.files : null,
+  });
 }
 
 /** One working-tree read: the structured answer, or the older Host's text diff. */
@@ -915,7 +1011,7 @@ interface UncommittedReadState {
 
 /** The working tree as the graph's first row, shaped like a commit. */
 function UncommittedDetail(props) {
-  const { repo, worktree, sessionId, narrow, supportsStructured } = props;
+  const { repo, worktree, sessionId, supportsStructured, narrow, onOpenFile } = props;
   const [state, setState] = React.useState<UncommittedReadState>({ status: 'loading' });
   React.useEffect(() => {
     const controller = new AbortController();
@@ -949,30 +1045,395 @@ function UncommittedDetail(props) {
     return () => { alive = false; controller.abort(); };
   }, [repo, worktree, sessionId, supportsStructured]);
   const data = state.data;
-  return h('div', { className: `dsh-gw-detail${narrow ? ' dsh-gw-detail-narrow' : ''}` },
-    h('div', { className: 'dsh-gw-detail-left' },
-      state.status === 'loading' ? h('div', { className: 'dsh-gw-msg' }, '读取中…') : null,
-      state.status === 'failed' ? h('div', { className: 'dsh-gw-error' }, state.error) : null,
-      state.status === 'legacy' ? h('div', { className: 'dsh-gw-msg' }, '当前 Host 尚未重载，暂时显示文本差异。') : null,
-      state.status === 'ready' && data ? h('div', { className: 'dsh-gw-kv' },
-        h('span', { className: 'dsh-gw-k' }, 'Branch'), h('span', { className: 'dsh-gw-v dsh-gw-mono' },
-          data.unborn ? '(尚无提交)' : data.branch),
-        h('span', { className: 'dsh-gw-k' }, 'Path'), h('span', { className: 'dsh-gw-v' }, data.path),
-        h('span', { className: 'dsh-gw-k' }, 'Changes'), h('span', { className: 'dsh-gw-v' },
-          `${data.summary.changed} 个文件`,
-          data.summary.insertions > 0 ? h('span', { className: 'dsh-gw-add' }, ` (+${data.summary.insertions})`) : null,
-          data.summary.deletions > 0 ? h('span', { className: 'dsh-gw-del' }, ` (-${data.summary.deletions})`) : null)) : null),
-    h('div', { className: 'dsh-gw-detail-right' },
-      h('div', { className: 'dsh-gw-stat' }, '工作区内未被提交的改动'),
-      state.status === 'legacy' && data
-        ? h('pre', { className: 'dsh-gw-legacy' }, [data.stat, data.patch].filter(Boolean).join('\n\n'))
+  const primary = h(React.Fragment, null,
+    state.status === 'loading' ? h('div', { className: 'dsh-gw-msg' }, 'Loading…') : null,
+    state.status === 'failed' ? h('div', { className: 'dsh-gw-error' }, state.error) : null,
+    state.status === 'legacy' ? h('div', { className: 'dsh-gw-msg' }, 'The Host has not reloaded yet. Showing the text diff for now.') : null,
+    state.status === 'legacy' && data
+      ? h('pre', { className: 'dsh-gw-legacy' }, [data.stat, data.patch].filter(Boolean).join('\n\n'))
+      : null,
+    state.status === 'ready' && data ? h('div', { className: 'dsh-gw-kv' },
+      h('span', { className: 'dsh-gw-k' }, 'Branch'),
+      h('span', { className: 'dsh-gw-v' }, data.unborn ? 'No commits yet' : data.branch || 'Detached HEAD')) : null);
+  const metadata = state.status === 'ready' && data ? h('div', { className: 'dsh-gw-kv' },
+      h('span', { className: 'dsh-gw-k' }, 'Path'),
+      h('span', { className: 'dsh-gw-v' }, data.path)) : null;
+  return h(ExpandedDetail, {
+    narrow,
+    primary,
+    metadata,
+    onOpenFile: state.status === 'ready' && data ? onOpenFile : undefined,
+    summary: state.status === 'ready' && data ? data.summary : null,
+    files: state.status === 'ready' && data ? data.files : null,
+  });
+}
+
+/** One file-diff read: pending, answered, or refused. */
+interface FileDiffState {
+  status: 'loading' | 'ready' | 'failed';
+  data?: FileDiffPayload | null;
+  error?: string | null;
+}
+
+/** How the patch is laid out: one column, or the old and new file side by side. */
+type DiffMode = 'unified' | 'split';
+
+/** One row of the side-by-side view: an old line, a new line, or a gap beside either. */
+interface DiffRow {
+  left: FileDiffLine | null;
+  right: FileDiffLine | null;
+}
+
+/**
+ * A run of side-by-side rows that can be laid out as one piece.
+ *
+ * Rows are paired one for one so a wrapped line keeps its partner on the same
+ * baseline. A row with nothing on one side needs no pairing at all, so a run of
+ * them is one part: the side that has lines becomes a column, and the side that
+ * has none becomes a single hatched cell. Drawn per row the hatching restarts
+ * its stripes at every boundary and the gaps between them read as seams.
+ */
+interface DiffPart {
+  rows: DiffRow[];
+  /** The side with no line, or null when both sides have one. */
+  empty: 'left' | 'right' | null;
+}
+
+function diffSplitParts(rows: DiffRow[]): DiffPart[] {
+  const parts: DiffPart[] = [];
+  for (const row of rows) {
+    const empty = row.left && row.right ? null : row.left ? 'right' : 'left';
+    const last = parts[parts.length - 1];
+    if (last && empty !== null && last.empty === empty) {
+      last.rows.push(row);
+      continue;
+    }
+    parts.push({ rows: [row], empty });
+  }
+  return parts;
+}
+
+/** What each kind of change is called, for the header's dim note. */
+const DIFF_STATUS_LABEL = { added: 'Added', deleted: 'Deleted', renamed: 'Renamed', modified: '' };
+/** What the header's menu offers, and which rows stand checked. */
+const DIFF_MENU_ROWS = [
+  { id: 'split', label: 'Split view' },
+  { id: 'wrap', label: 'Wrap long lines' },
+  { type: 'separator', id: 'divider' },
+  { id: 'copy', label: 'Copy file path' },
+];
+
+/** A line's carriage return is a line ending, not content: CRLF would draw a stray mark. */
+function diffLineText(line: FileDiffLine): string {
+  return line.text.replace(/\r$/, '');
+}
+
+/**
+ * The unchanged lines a hunk's heading jumps over.
+ *
+ * Git prints each hunk with its own surrounding context and drops everything
+ * between them, so the count is the distance from the previous hunk's end —
+ * the smallest of the two sides' distances when a hunk ends on an addition.
+ */
+function diffGapBefore(hunks: FileDiffHunk[], index: number): number {
+  const hunk = hunks[index];
+  if (index === 0) return Math.max(0, Math.min(hunk.oldStart, hunk.newStart) - 1);
+  const previous = hunks[index - 1];
+  const oldGap = hunk.oldStart - (previous.oldStart + previous.oldCount);
+  const newGap = hunk.newStart - (previous.newStart + previous.newCount);
+  return Math.max(0, Math.min(oldGap, newGap));
+}
+
+/**
+ * One hunk as side-by-side rows.
+ *
+ * Git prints a change as all of its removals, then all of its additions, so a
+ * run of removals pairs line-for-line with the run of additions after it and
+ * the longer run leaves the other side empty. A context line belongs to both.
+ */
+function diffSplitRows(hunk: FileDiffHunk): DiffRow[] {
+  const rows: DiffRow[] = [];
+  const lines = hunk.lines;
+  for (let index = 0; index < lines.length;) {
+    if (lines[index].kind === 'context') {
+      rows.push({ left: lines[index], right: lines[index] });
+      index += 1;
+      continue;
+    }
+    const removed: FileDiffLine[] = [];
+    const added: FileDiffLine[] = [];
+    while (index < lines.length && lines[index].kind === 'del') {
+      removed.push(lines[index]);
+      index += 1;
+    }
+    while (index < lines.length && lines[index].kind === 'add') {
+      added.push(lines[index]);
+      index += 1;
+    }
+    for (let at = 0; at < Math.max(removed.length, added.length); at += 1) {
+      rows.push({ left: removed[at] || null, right: added[at] || null });
+    }
+  }
+  return rows;
+}
+
+/**
+ * One changed file's whole change, drawn as the patch Git printed for it.
+ *
+ * This is a tab of its own rather than something the graph gives up its body
+ * to: a patch is read line by line and never fits a column, and a reader
+ * coming back to it expects it to still be there. Everything it needs to
+ * re-read the file arrives as this tab's navigation parameters, so it holds no
+ * reference to the panel that opened it — that panel may since have been
+ * pointed at another worktree, or closed.
+ *
+ * The patch is read when the file is opened, not with the list: the list
+ * already said how much changed, and only this file's lines are worth reading.
+ * It can be read two ways — one column, or the old and new file side by side —
+ * because which one is legible depends on how wide the column is and on what
+ * the change is. Lines keep their own numbering beside the code, unchanged
+ * stretches between hunks are counted rather than printed, and the code itself
+ * keeps the app's syntax colours rather than being painted over in red and
+ * green: the tint and the rule at the edge say what changed.
+ */
+function FileDiffView(props) {
+  const { repo, worktree, path, oid, from, sessionId, actions } = props;
+  const [state, setState] = React.useState<FileDiffState>({ status: 'loading' });
+  const [mode, setMode] = React.useState<DiffMode>('unified');
+  // Long lines wrap by default: this tab is a column of a sidebar, where a line
+  // that runs off the edge is read by scrolling rather than by reading.
+  const [wrap, setWrap] = React.useState(true);
+  const [menuOpen, setMenuOpen] = React.useState(false);
+  const [notice, setNotice] = React.useState<string | null>(null);
+  const menuAnchor = React.useRef<HTMLButtonElement | null>(null);
+  React.useEffect(() => {
+    const controller = new AbortController();
+    let alive = true;
+    setState({ status: 'loading' });
+    api('file-diff', { repo, worktree, path, oid, from }, sessionId, controller.signal)
+      .then((data) => { if (alive) setState({ status: 'ready', data }); })
+      .catch((error) => {
+        if (!alive || controller.signal.aborted) return;
+        // A route this Host does not have is an answer about the Host, not
+        // about the file, and it is the one failure the reader can act on.
+        setState({
+          status: 'failed',
+          error: /HTTP 404/.test(error.message)
+            ? 'This Harness build does not serve file patches yet. Update the plugin, restart the Host, and reload this page.'
+            : error.message,
+        });
+      });
+    return () => { alive = false; controller.abort(); };
+  }, [repo, worktree, path, oid, from, sessionId]);
+
+  // The app's own highlighter, on the grammar the filename selects. A language
+  // it has no grammar for, or one still loading, answers nothing and the line
+  // is drawn as plain text — never as an error, and re-highlighted when the
+  // grammar arrives.
+  const language = React.useMemo(() => languageForPath(path), [path]);
+  const highlight = useCodeHighlighter(language);
+  const runsFor = React.useMemo(() => {
+    const cache = new Map<string, HighlightSpan[]>();
+    return (text: string): HighlightSpan[] => {
+      if (!text) return [];
+      const held = cache.get(text);
+      if (held !== undefined) return held;
+      const highlighted = highlight(text);
+      const first = (highlighted && highlighted[0]) || [];
+      const runs = first.length > 0 ? first : [{ text, style: {} }];
+      cache.set(text, runs);
+      return runs;
+    };
+  }, [highlight]);
+  const runs = (line: FileDiffLine | null) => (line
+    ? runsFor(diffLineText(line)).map((run, at) => h('span', { key: at, style: run.style }, run.text))
+    : null);
+  /** One line of a side-by-side column: its number on its own side, then the code. */
+  /**
+   * The side of a run that has no line: an empty numbering column beside one
+   * hatched code cell. The hatching is the code's alone — a number has nothing
+   * to say about a line the file does not have — and one cell covers the whole
+   * run so its stripes do not restart at every line.
+   */
+  const splitEmpty = () => h('div', { className: 'dsh-gw-dsempty' },
+    h('div', { className: 'dsh-gw-dsnumcol' }),
+    h('div', { className: 'dsh-gw-dshatch' }));
+  const splitLine = (line: FileDiffLine, old: boolean, key: number) => h('div', {
+    key, className: clsx('dsh-gw-dsline', `dsh-gw-dsline-${line.kind}`),
+  },
+    h('span', { className: 'dsh-gw-dnum' }, String(old ? line.old : line.new)),
+    h('span', { className: clsx('dsh-gw-dtext', `dsh-gw-dtext-${line.kind}`) }, runs(line)));
+
+  // The tab system's own way into a file: the document preview claims a
+  // session-scoped resource address and opens the file in its own tab. A Host
+  // whose preview refuses the address answers with its own message, which is
+  // why this reports rather than swallows.
+  const openTheFile = () => {
+    if (!actions || typeof actions.openResource !== 'function' || !sessionId || !path) {
+      setNotice('This tab cannot open the file in a preview tab.');
+      return;
+    }
+    const address = `dsh-resource://file/session/${encodeURIComponent(sessionId)}/${path.split('/').map(encodeURIComponent).join('/')}`;
+    try {
+      actions.openResource(address);
+    } catch (error) {
+      setNotice(`Could not open the file: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  const onMenuSelect = (id: string) => {
+    setMenuOpen(false);
+    if (id === 'split') { setMode((value) => (value === 'split' ? 'unified' : 'split')); return; }
+    if (id === 'wrap') { setWrap((value) => !value); return; }
+    if (id === 'copy') {
+      void writeClipboard(path).then((ok) => setNotice(ok ? 'Path copied' : 'Could not copy the path'));
+    }
+  };
+
+  const data = state.status === 'ready' ? state.data : null;
+  const hunks = data ? data.hunks : [];
+  const body: React.ReactNode[] = [];
+  if (state.status === 'loading') body.push(h('div', { className: 'dsh-gw-msg', key: 'loading' }, 'Reading the diff…'));
+  if (state.status === 'failed') body.push(h('div', { className: 'dsh-gw-error', key: 'failed' }, state.error));
+  // A note replaces the lines: it says what could not be shown and why.
+  if (data && data.note) body.push(h('div', { className: 'dsh-gw-msg', key: 'note' }, data.note));
+  if (data && !data.note && data.binary) {
+    body.push(h('div', { className: 'dsh-gw-msg', key: 'binary' }, 'This file is binary, so its change is not shown as lines.'));
+  }
+  if (data && !data.note && !data.binary && hunks.length === 0) {
+    body.push(h('div', { className: 'dsh-gw-msg', key: 'empty' }, 'This file has no textual change.'));
+  }
+
+  for (let index = 0; index < hunks.length; index += 1) {
+    const hunk = hunks[index];
+    const gap = diffGapBefore(hunks, index);
+    if (gap > 0) {
+      body.push(h('div', { className: 'dsh-gw-dgap', key: `gap${index}` },
+        h(IconChevronsUpDownOutlineRegular, { size: 14, className: 'dsh-gw-dgapicon' }),
+        h('span', null, `${gap} unmodified line${gap === 1 ? '' : 's'}`)));
+    }
+    if (mode === 'unified') {
+      body.push(h('div', { className: 'dsh-gw-hunk', key: `hunk${index}` },
+        hunk.lines.map((line, at) => h('div', {
+          key: at,
+          className: clsx('dsh-gw-dline', `dsh-gw-dline-${line.kind}`),
+        },
+          h('span', { className: 'dsh-gw-dnum' }, String(line.new === null ? line.old : line.new)),
+          h('span', { className: clsx('dsh-gw-dtext', `dsh-gw-dtext-${line.kind}`) }, runs(line))))));
+      continue;
+    }
+    body.push(h('div', { className: 'dsh-gw-hunk dsh-gw-dsblock', key: `hunk${index}` },
+      diffSplitParts(diffSplitRows(hunk)).map((part, at) => h('div', { className: 'dsh-gw-dsrow', key: at },
+        part.empty === 'left'
+          ? splitEmpty()
+          : h('div', { className: 'dsh-gw-dscol' },
+            part.rows.map((row, line) => (row.left ? splitLine(row.left, true, line) : null))),
+        part.empty === 'right'
+          ? splitEmpty()
+          : h('div', { className: 'dsh-gw-dscol' },
+            part.rows.map((row, line) => (row.right ? splitLine(row.right, false, line) : null)))))));
+  }
+  if (data && data.truncated) {
+    body.push(h('div', { className: 'dsh-gw-msg', key: 'cut' }, 'This patch was cut short. Read the file itself for the rest.'));
+  }
+
+  return h('div', {
+    className: 'dsh-gw-diffpane',
+    'data-wrap': wrap ? 'true' : 'false',
+    'data-mode': mode,
+  },
+    h('div', { className: 'dsh-gw-diffhead' },
+      h(FileTypeIcon, { kind: classifyFileType(path), size: 16, className: 'dsh-gw-difficon' }),
+      h('div', { className: 'dsh-gw-difftitle' },
+        h(PathLabel, { path, className: 'dsh-gw-diffpath' })),
+      // The change's own totals sit against the name they belong to; the space
+      // left over is what keeps the controls at the far edge.
+      data && (data.add > 0 || data.del > 0) ? h('div', { className: 'dsh-gw-diffcounts' },
+        data.add > 0 ? h('span', { className: 'dsh-gw-add', key: 'a' }, `+${data.add}`) : null,
+        data.del > 0 ? h('span', { className: 'dsh-gw-del', key: 'd' }, `-${data.del}`) : null) : null,
+      data && DIFF_STATUS_LABEL[data.status]
+        ? h('span', { className: 'dsh-gw-diffstatus' }, DIFF_STATUS_LABEL[data.status])
         : null,
-      state.status === 'ready' && data && data.files.length > 0 ? h(FileTree, { files: data.files }) : null));
+      // Which change this file is being read inside, so a patch opened from a
+      // commit cannot be mistaken for one opened from the working tree.
+      oid ? h('span', { className: 'dsh-gw-diffoid dsh-gw-mono', title: oid }, shortOid(oid)) : null,
+      notice ? h('span', { className: 'dsh-gw-diffstatus', key: 'notice' }, notice) : null,
+      h('div', { className: 'dsh-gw-diffspace' }),
+      h('div', { className: 'dsh-gw-difftools' },
+        h(Menu, {
+          open: menuOpen,
+          portal: true,
+          align: 'end',
+          compact: true,
+          selection: 'check',
+          // A checked row is a state, an unchecked one is not: the two views are
+          // one option that is either on or off, as are wrapped lines.
+          selectedIds: [...(mode === 'split' ? ['split'] : []), ...(wrap ? ['wrap'] : [])],
+          anchor: h('button', {
+            type: 'button', className: 'dsh-gw-iconbtn', ref: menuAnchor,
+            title: 'View options', 'aria-label': 'View options',
+            'aria-haspopup': 'menu', 'aria-expanded': menuOpen,
+            onClick: () => { setNotice(null); setMenuOpen((open) => !open); },
+          }, h(IconEllipsisOutlineRegular, { size: 15 })),
+          items: [
+            { id: 'split', label: 'Split view', icon: h(IconCompareSplitOutlineRegular, { size: 16 }) },
+            { id: 'wrap', label: 'Wrap long lines', icon: h(IconWrapLinesOutlineRegular, { size: 16 }) },
+            DIFF_MENU_ROWS[2],
+            { id: 'copy', label: 'Copy file path', icon: h(IconCopyOutlineRegular, { size: 16 }) },
+          ],
+          onSelect: onMenuSelect,
+          onClose: () => setMenuOpen(false),
+          // The column clips at its own edges, so the list is drawn over the
+          // page from the button's own rectangle rather than inside it.
+          getAnchorRect: () => (menuAnchor.current ? menuAnchor.current.getBoundingClientRect() : null),
+        }),
+        h('button', {
+          type: 'button', className: 'dsh-gw-iconbtn',
+          title: 'Open this file in a preview tab', 'aria-label': 'Open this file in a preview tab',
+          disabled: !(actions && typeof actions.openResource === 'function'),
+          onClick: openTheFile,
+        }, h(IconRightUpOutlineRegular, { size: 15 })))),
+    // The lines scroll; the header above them does not, so the file's name and
+    // its counts stay readable however far a line is scrolled sideways.
+    h('div', { className: 'dsh-gw-difflines' },
+      h('div', { className: 'dsh-gw-diffbody' }, body)));
+}
+
+/**
+ * The diff tab's body: the patch its navigation parameters name.
+ *
+ * A tab is placed before it is rendered and re-navigated in place, so a
+ * missing path is a wiring mistake rather than a state — the panel never opens
+ * this type without one.
+ */
+function FileDiffTab(props) {
+  const info = typeof props.useTabInfo === 'function' ? props.useTabInfo() : null;
+  const tab = info ? info.tab : null;
+  const params = (tab && tab.navigation && tab.navigation.params) || {};
+  return h(FileDiffView, {
+    repo: params.repo || null,
+    worktree: params.worktree || null,
+    path: String(params.path || ''),
+    oid: params.oid || null,
+    from: params.from || null,
+    sessionId: props.sessionId || (tab && tab.sessionId) || null,
+    // The tab system's own actions, so the view can open the file it is
+    // showing in a preview tab without knowing how tabs are opened.
+    actions: (tab && tab.actions) || null,
+  });
+}
+
+/** The chip the strip draws for a diff tab: the file it is showing. */
+function FileDiffTitle(props) {
+  const info = typeof props.useTabInfo === 'function' ? props.useTabInfo() : null;
+  const tab = info ? info.tab : null;
+  const params = (tab && tab.navigation && tab.navigation.params) || {};
+  const name = String(params.path || '').split('/').filter(Boolean).pop();
+  return h(React.Fragment, null, h(DiffMarkGlyph, { size: 16 }), name || FILE_DIFF_TITLE);
 }
 
 /** What the error boundary wraps: the whole tab body. */
 interface BoundaryProps { children?: React.ReactNode }
-
 /** The failure the boundary caught, or null while it is standing by. */
 interface BoundaryState { error: { message?: string } | null }
 
@@ -988,7 +1449,7 @@ class Boundary extends React.Component<BoundaryProps, BoundaryState> {
   render() {
     if (this.state.error) {
       return h('div', { className: 'dsh-gw' },
-        h('div', { className: 'dsh-gw-error' }, `Git Worktree 面板渲染失败：${this.state.error.message}`));
+        h('div', { className: 'dsh-gw-error' }, `Git Worktree panel failed to render: ${this.state.error.message}`));
     }
     return this.props.children;
   }
@@ -1010,9 +1471,12 @@ interface PanelState {
 }
 
 function WorktreeTab(props) {
-  const info = typeof props.tabInfo === 'function' ? props.tabInfo() : null;
+  const info = typeof props.useTabInfo === 'function' ? props.useTabInfo() : null;
   const tab = info ? info.tab : null;
-  const sessionId = tab ? tab.sessionId : (props.sessionId || 'current');
+  // The framework hands a session-scoped tab body its own `sessionId`; the
+  // record carries one only in some builds, and 'current' is a last resort the
+  // Host answers honestly about rather than a stand-in for a real session.
+  const sessionId = props.sessionId || (tab && tab.sessionId) || 'current';
   const navigate = tab && tab.navigation ? tab.navigation.params : null;
 
   const saved = viewState.get(sessionId) || {};
@@ -1207,6 +1671,43 @@ function WorktreeTab(props) {
 
   const nodes = state.nodes || [];
   const layout = React.useMemo(() => layoutLanes(nodes), [nodes]);
+  // A file row always opens a patch, in the tab that is built to read one. The
+  // Host advertising `file-diff-v1` is what makes that certain, but the list is
+  // read once when this tab resolves its repository — and a Host that gained
+  // the route afterwards (a restarted or live-patched Harness) would leave
+  // every row permanently dead behind a capability that had gone stale. So the
+  // read answers for itself: the diff tab says what a Host without the route
+  // is missing, and nothing here has to guess.
+  const openFile = (file: ChangedFile, oid: string | null) => {
+    const actions = tab && tab.actions;
+    // Everything the diff tab needs to re-read the patch travels with it: the
+    // tab is a page of its own, not a view of this one's state.
+    const params = {
+      repo: state.repo,
+      worktree: selected,
+      path: file.path,
+      oid,
+      from: file.from || null,
+    };
+    // A click that opens nothing is worse than one that fails: without these
+    // the tab system is not reachable from here at all, which is a fact about
+    // the build that the reader can act on.
+    if (!actions || typeof actions.openTab !== 'function') {
+      setState((previous) => ({
+        ...previous,
+        error: 'This tab cannot open another one. Reload the Harness window to pick up the current build of this plugin.',
+      }));
+      return;
+    }
+    try {
+      actions.openTab(FILE_DIFF_KIND, { params });
+    } catch (error) {
+      setState((previous) => ({
+        ...previous,
+        error: `Could not open the diff tab: ${error instanceof Error ? error.message : String(error)}`,
+      }));
+    }
+  };
   const current = state.worktrees.find((item) => samePath(item.path, selected)) || null;
   const changeCount = current && current.status ? current.status.entries : 0;
   const dirty = changeCount > 0;
@@ -1231,6 +1732,7 @@ function WorktreeTab(props) {
   // Keep the Graph header readable for a one-lane repository; additional
   // lanes expand the column naturally.
   const graphWidth = Math.max(64, PAD + layout.width * COL + MARGIN);
+  const detailNarrow = width - (showGraph ? graphWidth : 0) - 16 < DETAIL_TWO_COLUMN_MIN;
   // How tall one expanded detail may grow: a share of the panel, floored so a
   // short panel still shows its first rows and capped so a tall one does not
   // open a detail that fills the whole column.
@@ -1239,15 +1741,23 @@ function WorktreeTab(props) {
     Math.min(DETAIL_MAX_CEILING, Math.round(height * DETAIL_MAX_SHARE)),
   );
 
-  const showDate = width > W_DATE;
-  const showAuthor = width > W_AUTHOR;
-  const showCommit = width > W_COMMIT;
+  const trackWidth = Math.max(0, width - COLUMN_GUTTER);
+  const textWidth = trackWidth - graphWidth;
+  const showDate = textWidth >= DESCRIPTION_MIN + DATE_MIN;
+  const showAuthor = textWidth >= DESCRIPTION_MIN + DATE_MIN + AUTHOR_MIN;
+  // Share space beyond the minimums between all visible columns. On the way
+  // down, Date, Author and Description therefore shrink together; a column
+  // disappears only after every visible column reaches its minimum width.
+  const extra = Math.max(0, textWidth - DESCRIPTION_MIN - (showDate ? DATE_MIN : 0) - (showAuthor ? AUTHOR_MIN : 0));
+  const dateWidth = showAuthor
+    ? Math.min(DATE_MAX, DATE_MIN + Math.floor(extra * 0.12))
+    : Math.min(DATE_MAX, DATE_MIN + Math.floor(extra * 0.15));
+  const authorWidth = Math.min(AUTHOR_MAX, AUTHOR_MIN + Math.floor(extra * 0.12));
   const columns = [
     ...(showGraph ? [`${graphWidth}px`] : []),
     'minmax(0, 1fr)',
-    ...(showDate ? ['132px'] : []),
-    ...(showAuthor ? ['130px'] : []),
-    ...(showCommit ? ['82px'] : []),
+    ...(showDate ? [`${dateWidth}px`] : []),
+    ...(showAuthor ? [`${authorWidth}px`] : []),
   ].join(' ');
 
   // Match the built-in Files tab: PathLabel keeps the complete path and fades
@@ -1259,18 +1769,18 @@ function WorktreeTab(props) {
           className: 'dsh-gw-wt',
           key: 'wt-path',
         })
-      : h('span', { className: 'dsh-gw-wt-placeholder', title: state.status === 'failed' ? '仓库不可用' : '正在读取工作树' },
-        state.status === 'failed' ? '仓库不可用' : '读取中…'),
+      : h('span', { className: 'dsh-gw-wt-placeholder', title: state.status === 'failed' ? 'Repository unavailable' : 'Loading worktrees' },
+        state.status === 'failed' ? 'Repository unavailable' : 'Loading…'),
     h('div', { className: 'dsh-gw-icons' },
       h('button', {
         type: 'button', className: 'dsh-gw-iconbtn',
-        title: showRemote ? '包含远端分支；点击仅显示本地分支' : '仅显示本地分支；点击包含远端分支',
-        'aria-label': '包含远端分支', 'aria-pressed': showRemote,
+        title: showRemote ? 'Showing remote branches; click to show local only' : 'Showing local branches; click to include remotes',
+        'aria-label': 'Show remote branches', 'aria-pressed': showRemote,
         onClick: () => setShowRemote((value) => !value),
       }, h(RemoteCloudIcon, { hidden: !showRemote })),
       h('button', {
-        type: 'button', className: 'dsh-gw-iconbtn', title: '重新读取',
-        'aria-label': '重新读取',
+        type: 'button', className: 'dsh-gw-iconbtn', title: 'Refresh',
+        'aria-label': 'Refresh',
         onClick: () => {
           setState((previous) => ({ ...previous, status: 'loading', resolved: false, error: null }));
           setReloadKey((key) => key + 1);
@@ -1282,7 +1792,7 @@ function WorktreeTab(props) {
   head.push(toolbar);
 
   if (state.error) head.push(h('div', { className: 'dsh-gw-error', key: 'error' }, state.error));
-  if (state.status === 'loading') head.push(h('div', { className: 'dsh-gw-msg', key: 'loading' }, '读取仓库中…'));
+  if (state.status === 'loading') head.push(h('div', { className: 'dsh-gw-msg', key: 'loading' }, 'Loading repository…'));
 
   const grid: React.ReactNode[] = [];
 
@@ -1292,7 +1802,7 @@ function WorktreeTab(props) {
   if (state.repo && state.status === 'ready' && changeCount > 0) {
     grid.push(h('div', {
       key: 'uncommitted',
-      className: `dsh-gw-row dsh-gw-rowmid${openKey === 'uncommitted' ? ' dsh-gw-row-open' : ''}`,
+      className: clsx('dsh-gw-row', openKey === 'uncommitted' && 'dsh-gw-row-open'),
       style: { '--dsh-gw-cols': columns },
       role: 'button', tabIndex: 0, 'aria-expanded': openKey === 'uncommitted',
       onClick: () => onToggle('uncommitted'),
@@ -1304,16 +1814,15 @@ function WorktreeTab(props) {
         width: graphWidth, height: ROW, 'aria-hidden': true,
       },
         worktreeLink
-          ? h('line', { x1: laneX(0), y1: ROW / 2, x2: laneX(0), y2: ROW, stroke: 'var(--gw-label-secondary)', strokeWidth: 1.6 })
+          ? h('line', { x1: laneX(0), y1: ROW / 2, x2: laneX(0), y2: ROW, stroke: 'var(--dsw-alias-label-secondary)', strokeWidth: 1.6 })
           : null,
-        h('circle', { cx: laneX(0), cy: ROW / 2, r: 4.5, fill: 'var(--gw-bg-base)', stroke: 'var(--gw-label-secondary)', strokeWidth: 2 }))) : null,
+        h('circle', { cx: laneX(0), cy: ROW / 2, r: 4.5, fill: 'var(--dsw-alias-bg-base)', stroke: 'var(--dsw-alias-label-secondary)', strokeWidth: 2 }))) : null,
       h('div', { className: 'dsh-gw-cell' },
         h('span', { className: 'dsh-gw-subjtext dsh-gw-uncommitted' },
           `Uncommitted Changes (${changeCount})`),
-        h('span', { className: 'dsh-gw-dot', style: { marginLeft: '6px' } })),
+        h('span', { className: 'dsh-gw-dot' })),
       showDate ? h('div', { className: 'dsh-gw-cell dsh-gw-cell-sec' }, '') : null,
-      showAuthor ? h('div', { className: 'dsh-gw-cell dsh-gw-cell-sec' }, '') : null,
-      showCommit ? h('div', { className: 'dsh-gw-cell dsh-gw-cell-sec' }, '') : null));
+      showAuthor ? h('div', { className: 'dsh-gw-cell dsh-gw-cell-sec' }, '') : null));
     if (openKey === 'uncommitted') {
       grid.push(h(DetailRegion, {
         key: 'uncommitted-detail',
@@ -1325,8 +1834,10 @@ function WorktreeTab(props) {
           : null,
       }, h(UncommittedDetail, {
         repo: state.repo, worktree: selected, sessionId,
-        narrow: width < W_DETAIL_SPLIT,
+        narrow: detailNarrow,
         supportsStructured: state.capabilities.includes('uncommitted-v1'),
+        // The working tree's own change: a patch with no commit behind it.
+        onOpenFile: (file) => openFile(file, null),
       })));
     }
   }
@@ -1356,13 +1867,13 @@ function WorktreeTab(props) {
     const hiddenRefs = counted ? (node.refCount || 0) - visibleRefs.length : 0;
     grid.push(h('div', {
       key: node.id,
-      className: `dsh-gw-row dsh-gw-rowmid${isHead ? ' dsh-gw-row-head' : ''}${openKey === node.id ? ' dsh-gw-row-open' : ''}`,
+      className: clsx('dsh-gw-row', isHead && 'dsh-gw-row-head', openKey === node.id && 'dsh-gw-row-open'),
       style: { '--dsh-gw-cols': columns },
       role: 'button', tabIndex: 0, 'aria-expanded': openKey === node.id,
       onClick: () => onToggle(node.id),
       onContextMenu: operations ? (event) => {
         event.preventDefault();
-        setMenu({ x: Math.min(event.clientX, Math.max(180, width - 180)), y: event.clientY, commit: node.id });
+        setMenu({ x: event.clientX, y: event.clientY, commit: node.id });
       } : undefined,
       onKeyDown: (event) => {
         if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onToggle(node.id); }
@@ -1380,13 +1891,12 @@ function WorktreeTab(props) {
             key: `${ref.kind}:${ref.name}`, gitRef: ref, laneColor,
           })),
           hiddenRefs > 0
-            ? h('span', { className: 'dsh-gw-ref', title: '还有更多本地分支' }, `+${hiddenRefs}`)
+            ? h('span', { className: 'dsh-gw-ref', title: 'More local branches' }, `+${hiddenRefs}`)
             : null,
-          h('span', { className: 'dsh-gw-subjtext' }, node.subject || '(无提交说明)'))),
+          h('span', { className: 'dsh-gw-subjtext' }, node.subject || '(no commit message)'))),
       showDate ? h('div', { className: 'dsh-gw-cell dsh-gw-cell-sec', title: absoluteTime(node.authoredAt) },
         absoluteTime(node.authoredAt)) : null,
-      showAuthor ? h('div', { className: 'dsh-gw-cell dsh-gw-cell-sec' }, node.author || '') : null,
-      showCommit ? h('div', { className: 'dsh-gw-cell dsh-gw-cell-mono' }, shortOid(node.id)) : null));
+      showAuthor ? h('div', { className: 'dsh-gw-cell dsh-gw-cell-sec', title: node.author || '' }, node.author || '') : null));
 
     if (openKey === node.id) {
       grid.push(h(DetailRegion, {
@@ -1397,7 +1907,8 @@ function WorktreeTab(props) {
         repo: state.repo,
         oid: node.id,
         sessionId,
-        narrow: width < W_DETAIL_SPLIT,
+        narrow: detailNarrow,
+        onOpenFile: (file) => openFile(file, node.id),
       })));
     }
   }
@@ -1405,52 +1916,73 @@ function WorktreeTab(props) {
   // The next page is offered only while one exists: a repository shorter
   // than a page used to carry a button that could only fetch nothing.
   if (state.status === 'ready' && nodes.length > 0 && state.graph && !state.exhausted) {
-    grid.push(h('div', { className: 'dsh-gw-more', key: 'more', style: { padding: '8px', textAlign: 'center' } },
-      h('button', { type: 'button', className: 'dsh-gw-btn', disabled: state.more, onClick: loadMore },
-        state.more ? '读取中…' : '加载更多')));
+    grid.push(h('div', { className: 'dsh-gw-more', key: 'more' },
+      h(Button, { type: 'button', variant: 'outline', size: 'sm', disabled: state.more, onClick: loadMore },
+        state.more ? 'Loading…' : 'Load more')));
   }
 
   if (state.status === 'ready' && state.graph && state.graph.unborn) {
-    grid.push(h('div', { className: 'dsh-gw-empty', key: 'unborn' }, '该仓库尚无提交，只有未提交的改动。'));
+    grid.push(h('div', { className: 'dsh-gw-empty', key: 'unborn' }, 'This repository has no commits yet; only uncommitted changes.'));
   } else if (state.status === 'ready' && !state.repo) {
-    grid.push(h('div', { className: 'dsh-gw-empty', key: 'norepo' }, '没有可用的仓库路径。'));
+    grid.push(h('div', { className: 'dsh-gw-empty', key: 'norepo' }, 'No repository path is available.'));
   } else if (state.status === 'ready' && nodes.length === 0) {
     grid.push(h('div', {
       className: 'dsh-gw-empty',
       key: 'empty',
       title: JSON.stringify({ root: state.repo, selected, scope }),
-    }, state.graph ? '该范围内没有可显示的提交。' : '提交图仍在读取，或最后一次读取失败。'));
+    }, state.graph ? 'No commits in this range.' : 'The graph is still loading, or the last request failed.'));
   }
 
-  return h('div', { className: 'dsh-gw', ref: rootRef, onClick: menu ? () => setMenu(null) : undefined },
-    h('style', null, CSS),
+  return h('div', {
+    className: 'dsh-gw', ref: rootRef,
+    style: { '--dsh-gw-row-height': `${ROW}px` },
+  },
     head,
     h('div', { className: 'dsh-gw-scroll' },
       h('div', { className: 'dsh-gw-grid' }, grid)),
-    menu && operations ? h('div', {
-      className: 'dsh-gw-menu', key: 'menu',
-      style: { left: `${menu.x}px`, top: `${menu.y}px` },
-      onClick: (event) => event.stopPropagation(),
+    menu && operations ? h(Menu, {
+      open: true,
+      anchor: h('span', { 'aria-hidden': true }),
+      portal: true,
+      autoFocus: true,
+      getAnchorRect: () => new DOMRect(menu.x, menu.y - 4, 0, 0),
+      items: [
+        { id: 'rebase', label: 'Rebase onto this commit' },
+        { id: 'cherry-pick', label: 'Cherry-pick this commit' },
+      ],
+      onSelect: (id) => void openPreview(id as 'rebase' | 'cherry-pick', menu.commit),
+      onClose: () => setMenu(null),
+    }) : null,
+    preview ? h(Modal, {
+      open: true,
+      title: preview.operation === 'rebase' ? 'Confirm rebase' : 'Confirm cherry-pick',
+      closeLabel: 'Close',
+      onClose: () => setPreview(null),
+      backdropBlur: false,
+      className: 'dsh-gw-modal',
+      footer: h('div', { className: 'dsh-gw-actions' },
+        h(Button, { type: 'button', variant: 'outline', size: 'sm', onClick: () => setPreview(null) }, 'Cancel'),
+        h(Button, { type: 'button', variant: 'outline', size: 'sm', className: 'dsh-gw-danger', onClick: () => void applyPreview() },
+          preview.operation === 'rebase' ? 'Rebase' : 'Cherry-pick')),
     },
-      h('button', { type: 'button', onClick: () => void openPreview('rebase', menu.commit) }, 'Rebase onto commit'),
-      h('button', { type: 'button', onClick: () => void openPreview('cherry-pick', menu.commit) }, 'Cherry-pick commit')) : null,
-    preview ? h('div', { className: 'dsh-gw-backdrop', key: 'preview' },
-      h('div', { className: 'dsh-gw-modal', role: 'dialog', 'aria-modal': true, 'aria-label': 'Confirm Git operation' },
-        h('h2', null, `Confirm ${preview.operation}`),
-        h('p', null, 'Worktree ', h('code', null, preview.worktreePath)),
-        h('p', null, 'Branch ', h('strong', null, preview.branch), ' at ', h('code', null, preview.head.slice(0, 8))),
-        h('p', null, 'Target ', h('code', null, preview.targetCommit.slice(0, 8))),
-        h('p', null, `${preview.commits.length} commit${preview.commits.length === 1 ? '' : 's'} in preview · expires ${new Date(preview.expiresAt).toLocaleTimeString()}`),
-        h('details', null, h('summary', null, 'Commits in plan'),
-          h('ol', null, preview.commits.map((commit) => h('li', { key: commit }, h('code', { title: commit }, commit.slice(0, 12)))))),
-        preview.warnings.map((warning) => h('p', { className: 'dsh-gw-warn', key: warning }, warning)),
-        h('div', { className: 'dsh-gw-actions' },
-          h('button', { type: 'button', className: 'dsh-gw-btn', onClick: () => setPreview(null) }, 'Cancel'),
-          h('button', { type: 'button', className: 'dsh-gw-btn dsh-gw-danger', onClick: () => void applyPreview() }, `Apply ${preview.operation}`)))) : null);
+      h('p', null, 'Worktree: ', h('code', null, preview.worktreePath)),
+      h('p', null, 'Branch: ', h('strong', null, preview.branch), ' · HEAD ', h('code', null, preview.head.slice(0, 8))),
+      h('p', null, 'Target commit: ', h('code', null, preview.targetCommit.slice(0, 8))),
+      h('p', null, `Preview includes ${preview.commits.length} commit${preview.commits.length === 1 ? '' : 's'} · expires at ${new Date(preview.expiresAt).toLocaleTimeString('en-US')}`),
+      h('details', null, h('summary', null, 'View commits'),
+        h('ol', null, preview.commits.map((commit) => h('li', { key: commit }, h('code', { title: commit }, commit.slice(0, 12)))))),
+      preview.warnings.map((warning) => h('p', { className: 'dsh-gw-warn', key: warning }, warning))) : null);
 }
 
+/**
+ * The chip the strip draws for the graph tab.
+ *
+ * Its glyph is one size down from the rest: this artwork is drawn to the edges
+ * of its 16-unit box, where a file-type icon of the same size leaves a margin,
+ * so at 16 it reads a size larger than the chips beside it.
+ */
 function WorktreeTitle() {
-  return h(React.Fragment, null, h(IconBranchOutlineRegular, { size: 16 }), WORKTREE_TAB_TITLE);
+  return h(React.Fragment, null, h(IconBranchOutlineRegular, { size: 14 }), WORKTREE_TAB_TITLE);
 }
 
 const GuideIcon = () => h('svg', {
@@ -1462,4 +1994,4 @@ const GuideIcon = () => h('svg', {
   h('circle', { cx: 12, cy: 8, r: 2 }),
   h('path', { d: 'M4 6v4M6 4h3a3 3 0 0 1 3 3v1' }));
 
-export { Boundary, GuideIcon, WorktreeTab, WorktreeTitle, WORKTREE_TAB_TITLE, configureView };
+export { Boundary, CSS_MODULE_TEXT, FileDiffTab, FileDiffTitle, GuideIcon, WorktreeTab, WorktreeTitle, FILE_DIFF_KIND, FILE_DIFF_TITLE, WORKTREE_TAB_TITLE, configureView };

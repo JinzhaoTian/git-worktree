@@ -1,0 +1,219 @@
+.dsh-gw { display: flex; flex-direction: column; height: 100%; min-height: 0; font-size: var(--dsh-content-font-size-secondary, 13px); line-height: 1.5; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-base); }
+.dsh-gw * { box-sizing: border-box; }
+.dsh-gw-tbar { display: flex; align-items: center; gap: 4px; flex: 0 0 38px; width: 100%; min-width: 0; height: 38px; padding: 0 6px 0 16px; border-bottom: .5px solid var(--dsw-alias-border-l3); background: var(--dsw-alias-bg-base); white-space: nowrap; }
+.dsh-gw-icons { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 2px; }
+.dsh-gw-iconbtn { display: inline-flex; flex: 0 0 auto; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 6px; border: 0; border-radius: var(--dsw-radius-sm); background: none; color: var(--dsw-alias-label-secondary); cursor: pointer; line-height: 1; }
+.dsh-gw-iconbtn svg { width: 15px; height: 15px; }
+.dsh-gw-iconbtn:hover, .dsh-gw-iconbtn[aria-pressed=true] { background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-primary); }
+.dsh-gw-iconbtn:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
+.dsh-gw-wt { margin-right: 12px; }
+.dsh-gw-wt-placeholder { flex: 1 1 auto; min-width: 0; overflow: hidden; color: var(--dsw-alias-label-secondary); }
+.dsh-gw-dot { flex: 0 0 auto; width: 6px; height: 6px; margin-left: 6px; border-radius: 50%; corner-shape: round; background: var(--dsw-alias-state-warn-primary); }
+.dsh-gw-msg { padding: 5px 10px; color: var(--dsw-alias-label-secondary); border-bottom: .5px solid var(--dsw-alias-border-l1); }
+.dsh-gw-error { margin: 8px 10px; padding: 6px 8px; border: 1px solid var(--dsw-alias-state-error-primary); border-radius: var(--dsw-radius-sm); color: var(--dsw-alias-state-error-primary); white-space: pre-wrap; word-break: break-word; }
+.dsh-gw-empty { padding: 16px 10px; color: var(--dsw-alias-label-secondary); text-align: center; }
+
+.dsh-gw-scroll { flex: 1 1 auto; min-height: 0; margin-right: 2px; padding: 8px 0 8px 8px; overflow: auto; scrollbar-gutter: stable; }
+.dsh-gw-grid { display: flex; flex-direction: column; min-width: 100%; }
+/* Match Files' row treatment. Keep the row exactly ROW tall so each SVG rail
+   slice starts where the previous one ends, even when the highlight is round. */
+.dsh-gw-row { display: grid; grid-template-columns: var(--dsh-gw-cols); align-items: center; height: var(--dsh-gw-row-height); overflow: hidden; border-radius: var(--dsw-radius-md); cursor: pointer; outline: none; }
+.dsh-gw-row:hover, .dsh-gw-row-open { background: var(--dsw-alias-interactive-bg-hover); }
+.dsh-gw-row-open { border-radius: var(--dsw-radius-md) var(--dsw-radius-md) 0 0; }
+.dsh-gw-row:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: -2px; }
+.dsh-gw-cell { display: flex; align-items: center; min-width: 0; padding: 0 8px; }
+.dsh-gw-cell-sec { color: var(--dsw-alias-label-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dsh-gw-gcell { display: flex; align-self: stretch; overflow: hidden; }
+.dsh-gw-gcell svg { display: block; flex: 0 0 auto; }
+.dsh-gw-subj { display: flex; align-items: center; gap: 6px; min-width: 0; width: 100%; }
+.dsh-gw-subjtext { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dsh-gw-ref { flex: 0 0 auto; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 5px; border-radius: var(--dsw-radius-xs); font-size: 11px; line-height: 16px; border: .5px solid var(--dsw-alias-border-l2); background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-secondary); }
+/* A branch chip is the lane's own: tile, border, tint and now the name all come
+   from the lane colour, so one branch reads as one colour rather than as green
+   chrome around black text. */
+.dsh-gw-ref-branch, .dsh-gw-ref-remote { display: inline-flex; align-items: center; gap: 4px; padding: 0 5px 0 0; border-color: color-mix(in srgb, var(--dsh-gw-ref-color) 42%, var(--dsw-alias-border-l2)); background: color-mix(in srgb, var(--dsh-gw-ref-color) 8%, var(--dsw-alias-bg-layer-2)); color: var(--dsh-gw-ref-color); }
+.dsh-gw-ref-remote { border-style: dashed; }
+.dsh-gw-ref-icon { display: inline-flex; align-items: center; justify-content: center; align-self: stretch; width: 18px; min-width: 18px; min-height: 16px; border-radius: var(--dsw-radius-xs) 0 0 var(--dsw-radius-xs); background: var(--dsh-gw-ref-color); color: var(--dsw-alias-label-primary-foreground); }
+.dsh-gw-ref-icon svg { display: block; }
+.dsh-gw-ref-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.dsh-gw-ref-remote-name { color: var(--dsw-alias-label-secondary); font-style: italic; }
+.dsh-gw-ref-current { border-color: color-mix(in srgb, var(--dsh-gw-ref-color) 68%, var(--dsw-alias-border-l2)); font-weight: 600; }
+.dsh-gw-ref-tag { color: var(--dsw-alias-state-success-primary); }
+.dsh-gw-ref-stash { color: var(--dsw-alias-state-warn-primary); }
+/* The worktree chip is one chip built from two cells: the inverted label (solid
+   label color — black in light mode, white in dark — with the text knocked out),
+   then the branch it holds drawn as a branch chip is. The frame belongs to the
+   chip, not to either cell, so the label colour rings the whole pair while the
+   branch name sits on its own lane-tinted surface rather than on the label's
+   black. No gap between the cells, and the frame clips them to its own corners. */
+.dsh-gw-ref-worktree { display: inline-flex; align-items: stretch; gap: 0; padding: 0; border: 1px solid var(--dsw-alias-label-primary); border-radius: var(--dsw-radius-xs); overflow: hidden; background: none; font-size: 11px; line-height: 18px; }
+.dsh-gw-ref-worktree-label { display: inline-flex; align-items: center; padding: 0 7px; background: var(--dsw-alias-label-primary); color: var(--dsw-alias-bg-base); font-size: 12px; font-weight: 600; line-height: 18px; }
+.dsh-gw-ref-worktree-held { display: inline-flex; align-items: center; gap: 4px; padding: 0 7px 0 0; background: color-mix(in srgb, var(--dsh-gw-ref-color) 8%, var(--dsw-alias-bg-layer-2)); color: var(--dsw-alias-label-primary); line-height: 18px; }
+.dsh-gw-ref-worktree-icon { display: inline-flex; align-items: center; justify-content: center; align-self: stretch; width: 18px; min-width: 18px; background: var(--dsh-gw-ref-color); color: var(--dsw-alias-label-primary-foreground); }
+.dsh-gw-ref-worktree-icon svg { display: block; }
+.dsh-gw-ref-worktree-name { display: inline-flex; align-items: center; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dsh-gw-ref-worktree-remote { color: var(--dsw-alias-label-secondary); font-style: italic; }
+
+.dsh-gw-uncommitted { font-weight: 600; }
+.dsh-gw-row-head { font-weight: 600; }
+.dsh-gw-row-head .dsh-gw-ref { font-weight: 400; }
+/* Keep the band attached to its row while giving its content a quieter tint.
+   The inset separator leaves graph geometry untouched. */
+.dsh-gw-detailrow { display: flex; align-items: stretch; overflow: hidden; border-radius: 0 0 var(--dsw-radius-md) var(--dsw-radius-md); background: color-mix(in srgb, var(--dsw-alias-interactive-bg-hover) 70%, var(--dsw-alias-bg-layer-1)); box-shadow: inset 0 1px 0 var(--dsw-alias-border-l1); }
+.dsh-gw-rail { position: relative; flex: 0 0 auto; align-self: stretch; overflow: hidden; }
+.dsh-gw-rail-line { position: absolute; top: 0; bottom: 0; border-radius: 1px; }
+.dsh-gw-rail-turn { position: absolute; display: block; overflow: visible; }
+.dsh-gw-detailbody { flex: 1 1 auto; min-width: 0; padding: 0 8px 10px 0; }
+/* A detail is two halves, each a column of its own: a header that keeps its
+   natural height over a part that scrolls by itself. Nothing is shared row by
+   row, so one side's line count can never move the other's — a commit hash
+   that wraps to two lines lengthens the metadata alone, while the file
+   summary above the changed files stays the one line it is. The halves' widths
+   are written inline as `flex` ratios (see ExpandedDetail in worktree.ts). */
+.dsh-gw-detail { --dsh-gw-detail-grip: 8px; display: flex; align-items: stretch; width: 100%; max-height: var(--dsh-gw-detail-max); overflow: hidden; background: transparent; }
+.dsh-gw-detail-side { display: flex; flex: 1 1 0; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+.dsh-gw-detail-primary { flex: 0 0 auto; min-width: 0; padding: 8px 10px 0; }
+.dsh-gw-detail-summary { flex: 0 0 auto; min-width: 0; padding: 8px 10px 0; }
+.dsh-gw-detail-metadata { flex: 1 1 auto; min-width: 0; min-height: 0; padding: 5px 10px 8px; overflow: auto; }
+.dsh-gw-detail-files { flex: 1 1 auto; min-width: 0; min-height: 0; padding: 0 10px 8px; overflow: auto; }
+/* The boundary between the two halves belongs to the grip rather than to a
+   border on either side, so it runs the full height of the detail and can be
+   picked up by the pointer. Its column is the hit area; the 1px rule sits in
+   the middle of it and thickens to the brand colour while the grip is hovered,
+   dragged or focused from the keyboard. */
+.dsh-gw-detail-grip { flex: 0 0 auto; position: relative; align-self: stretch; width: var(--dsh-gw-detail-grip); min-height: 0; cursor: col-resize; touch-action: none; }
+.dsh-gw-detail-grip::before { content: ''; position: absolute; top: 0; bottom: 0; left: 50%; width: 1px; margin-left: -.5px; background: var(--dsw-alias-border-l1); }
+.dsh-gw-detail-grip:hover::before, .dsh-gw-detail-grip:focus-visible::before, .dsh-gw-detail-grip[data-dragging]::before { width: 2px; margin-left: -1px; background: var(--dsw-alias-brand-primary); }
+.dsh-gw-detail-grip:focus-visible { outline: none; }
+/* Stacked, the halves become one column of plain blocks and the detail itself
+   is the only scroll area, so no part is left nested in a second scroller. */
+.dsh-gw-detail-narrow { flex-direction: column; overflow: auto; }
+.dsh-gw-detail-narrow .dsh-gw-detail-side { flex: 0 0 auto; overflow: visible; }
+.dsh-gw-detail-narrow .dsh-gw-detail-primary, .dsh-gw-detail-narrow .dsh-gw-detail-summary, .dsh-gw-detail-narrow .dsh-gw-detail-metadata, .dsh-gw-detail-narrow .dsh-gw-detail-files { flex: 0 0 auto; overflow: visible; }
+.dsh-gw-detail-narrow .dsh-gw-detail-metadata { padding-top: 5px; border-bottom: .5px solid var(--dsw-alias-border-l1); }
+.dsh-gw-detail-narrow.dsh-gw-detail-single .dsh-gw-detail-metadata { border-bottom: 0; }
+.dsh-gw-kv { display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 2px 8px; font-size: var(--dsh-content-font-size-secondary, 13px); line-height: 1.5; }
+.dsh-gw-k { color: var(--dsw-alias-label-secondary); }
+.dsh-gw-v { min-width: 0; overflow-wrap: anywhere; }
+.dsh-gw-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.dsh-gw-body { margin-top: 8px; padding-top: 8px; border-top: .5px solid var(--dsw-alias-border-l1); white-space: pre-wrap; color: var(--dsw-alias-label-secondary); }
+.dsh-gw-legacy { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: var(--dsw-alias-label-secondary); }
+.dsh-gw-stat { color: var(--dsw-alias-label-secondary); font-size: var(--dsh-content-font-size-secondary, 13px); line-height: 1.5; }
+.dsh-gw-add { color: var(--dsw-alias-state-success-primary); }
+.dsh-gw-del { color: var(--dsw-alias-state-error-primary); }
+.dsh-gw-ftree { display: flex; flex-direction: column; }
+.dsh-gw-frow { display: flex; align-items: center; gap: 6px; width: calc(100% - var(--dsh-gw-indent, 0px)); min-height: 30px; min-width: 0; margin-left: var(--dsh-gw-indent, 0px); padding: 5px 10px; border: 0; border-radius: var(--dsw-radius-md); background: transparent; color: var(--dsw-alias-label-primary); font: inherit; text-align: left; }
+.dsh-gw-frow-folder { cursor: pointer; }
+.dsh-gw-frow-folder:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.dsh-gw-frow-folder:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: -2px; }
+/* A file that can be opened is a control, so it gets the folder's own
+   affordances; one that cannot stays the row it was. */
+.dsh-gw-frow-file { cursor: pointer; }
+.dsh-gw-frow-file:hover { background: var(--dsw-alias-interactive-bg-hover); }
+.dsh-gw-frow-file:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: -2px; }
+/* A binary file has no lines to show, so its name is set apart from the files
+   whose diff can be read. */
+.dsh-gw-frow-binary .dsh-gw-fname { font-style: italic; }
+.dsh-gw-frow svg { display: block; flex: 0 0 auto; }
+.dsh-gw-file-icon, .dsh-gw-folder-icon { width: 16px; height: 16px; flex-basis: 16px; }
+.dsh-gw-folder-icon { color: var(--dsw-alias-label-tertiary); }
+.dsh-gw-fname { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dsh-gw-fstat { display: inline-flex; align-items: center; gap: 7px; margin-left: auto; padding-left: 8px; flex: 0 0 auto; color: var(--dsw-alias-label-secondary); font-size: 12px; line-height: 18px; font-variant-numeric: tabular-nums; }
+.dsh-gw-fstat .dsh-gw-stat { margin: 0; font-size: inherit; line-height: inherit; }
+.dsh-gw-more { padding: 8px; text-align: center; }
+.dsh-gw-modal { width: min(420px, 100%); }
+.dsh-gw-modal p { margin: 4px 0; font-size: var(--dsh-content-font-size-secondary, 13px); line-height: 1.5; color: var(--dsw-alias-label-secondary); overflow-wrap: anywhere; }
+.dsh-gw-modal ol { max-height: 140px; overflow: auto; margin: 6px 0; padding-left: 20px; font-size: var(--dsh-content-font-size-secondary, 13px); line-height: 1.5; }
+.dsh-gw-warn { color: var(--dsw-alias-state-warn-primary); }
+.dsh-gw-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.dsh-gw-danger { border-color: var(--dsw-alias-state-error-primary); color: var(--dsw-alias-state-error-primary); }
+
+/* One file's patch, in a tab of its own: a diff is read line by line and never
+   fits a column, so it is somewhere that can be left and come back to. The
+   header is outside the scroller, so the file's name, counts and controls stay
+   put, and the lines below it scroll — unless wrapping is on, which for a
+   sidebar column is the default, and is why the reference layouts wrap too.
+   What changed is said by a tint and a rule at the line's edge rather than by
+   painting the code red and green: the code keeps the app's own syntax
+   colours. Tints are the app's diff tokens laid over an opaque base, because a
+   pinned gutter inherits its line's background and a translucent one would let
+   the text it is pinned over show through. */
+.dsh-gw-diffpane { --dsh-gw-gutter: 54px; display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; font-size: var(--dsh-content-font-size-secondary, 13px); line-height: 1.5; color: var(--dsw-alias-label-primary); background: var(--dsw-alias-bg-base); }
+.dsh-gw-diffpane * { box-sizing: border-box; }
+.dsh-gw-diffwrap { display: flex; flex: 1 1 auto; flex-direction: column; min-height: 0; }
+.dsh-gw-difflines { flex: 1 1 auto; min-height: 0; overflow: auto; }
+/* The same 38px band as the panel's own toolbar, with the same 28px controls,
+   so the two headers read as one column of chrome. */
+.dsh-gw-diffhead { display: flex; flex: 0 0 38px; align-items: center; gap: 8px; width: 100%; height: 38px; padding: 0 6px 0 12px; border-bottom: .5px solid var(--dsw-alias-border-l3); background: var(--dsw-alias-bg-base); white-space: nowrap; }
+.dsh-gw-difficon { display: block; flex: 0 0 auto; width: 16px; height: 16px; }
+.dsh-gw-difftitle { display: flex; flex: 0 1 auto; align-items: center; gap: 6px; min-width: 0; }
+.dsh-gw-diffspace { flex: 1 1 auto; min-width: 0; }
+.dsh-gw-diffpath { min-width: 0; }
+.dsh-gw-diffcounts { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 7px; font-size: 12px; font-variant-numeric: tabular-nums; }
+.dsh-gw-diffstatus { flex: 0 0 auto; color: var(--dsw-alias-label-secondary); font-size: 12px; }
+.dsh-gw-diffoid { flex: 0 0 auto; color: var(--dsw-alias-label-tertiary); font-size: 11px; }
+.dsh-gw-difftools { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 2px; }
+/* A control that cannot act yet says so rather than looking live. */
+.dsh-gw-iconbtn:disabled { cursor: default; opacity: .45; }
+.dsh-gw-iconbtn:disabled:hover { background: none; color: var(--dsw-alias-label-secondary); }
+.dsh-gw-diffbody { width: max-content; min-width: 100%; padding-bottom: 20px; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.dsh-gw-diffpane[data-wrap=true] .dsh-gw-diffbody { width: auto; }
+/* The count of the lines Git left out between two hunks — the reference's own
+   "N unmodified lines" bar. Neither side can be read on demand here, so the bar
+   states the count and offers no control that would promise the lines. */
+.dsh-gw-dgap { display: flex; align-items: center; gap: 6px; margin: 4px 8px; padding: 0 8px; border-radius: var(--dsw-radius-sm); background: var(--dsw-alias-bg-layer-1); color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 22px; }
+.dsh-gw-dgapicon { flex: 0 0 auto; }
+.dsh-gw-hunk { margin-top: 2px; }
+.dsh-gw-dline { display: flex; align-items: stretch; min-height: 1.6em; background: var(--dsw-alias-bg-base); }
+/* The numbers are their own column, pinned to the left edge of the scroller so
+   a line too long for the column can be scrolled without losing which line it
+   is. It stands on the ground like everything else; only a changed line fills
+   it, and the two columns are parted by a gap of that ground rather than by a
+   rule, so nothing competes with the change's own edge. `background-clip` is
+   what keeps a changed line's fill out of that gap. */
+.dsh-gw-dnum { position: sticky; left: 0; z-index: 1; flex: 0 0 auto; width: var(--dsh-gw-gutter); padding: 0 9px 0 8px; border-right: 4px solid var(--dsw-alias-bg-base); background-color: var(--dsw-alias-bg-base); background-clip: padding-box; color: var(--dsw-alias-label-tertiary); text-align: right; font-variant-numeric: tabular-nums; user-select: none; }
+/* The rule marking a change runs down the OUTER edge of the numbering — left of
+   the numbers, not through the code — and one line's rule meets the next, so a
+   run of them is one bar spanning the block. */
+.dsh-gw-dnum::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; }
+.dsh-gw-dline-add .dsh-gw-dnum::before, .dsh-gw-dsline-add .dsh-gw-dnum::before { background: var(--dsw-alias-state-success-primary); }
+.dsh-gw-dline-del .dsh-gw-dnum::before, .dsh-gw-dsline-del .dsh-gw-dnum::before { background: var(--dsw-alias-state-error-primary); }
+/* The tint reaches the numbers too, and the number itself says which side of
+   the change it counts. */
+.dsh-gw-dline-add .dsh-gw-dnum, .dsh-gw-dsline-add .dsh-gw-dnum { background-color: #edf7ed; color: var(--dsw-alias-state-success-primary); }
+.dsh-gw-dline-del .dsh-gw-dnum, .dsh-gw-dsline-del .dsh-gw-dnum { background-color: #fdece9; color: var(--dsw-alias-state-error-primary); }
+body[data-ds-dark-theme] .dsh-gw-dline-add .dsh-gw-dnum, body[data-ds-dark-theme] .dsh-gw-dsline-add .dsh-gw-dnum { background-color: #132017; }
+body[data-ds-dark-theme] .dsh-gw-dline-del .dsh-gw-dnum, body[data-ds-dark-theme] .dsh-gw-dsline-del .dsh-gw-dnum { background-color: #28130e; }
+.dsh-gw-dtext { flex: 1 1 auto; padding: 0 14px 0 11px; white-space: pre; }
+.dsh-gw-diffpane[data-wrap=true] .dsh-gw-dtext { white-space: pre-wrap; overflow-wrap: anywhere; }
+/* Side by side: the old file and the new one, each with its own numbers, and a
+   hatched gap where a side has no line to show beside its pair. */
+.dsh-gw-diffpane[data-mode=split] .dsh-gw-diffbody { width: auto; padding-bottom: 20px; }
+.dsh-gw-dsrow { display: flex; align-items: stretch; }
+/* One cell of a paired row, or one side of a run: a half holds a single line
+   beside its partner; a column holds the lines of a run whose other side is
+   empty. */
+/* The two files are parted the same way the numbering is parted from the code:
+   a couple of pixels of the ground rather than a drawn rule, so no line competes
+   with the change's own edge. Where the sides differ — hatched against code,
+   tinted against plain — that gap is what the eye reads as the division. */
+.dsh-gw-dscol, .dsh-gw-dsempty { display: flex; flex: 1 1 50%; min-width: 0; border-right: 4px solid var(--dsw-alias-bg-base); background: var(--dsw-alias-bg-base); background-clip: padding-box; }
+.dsh-gw-dscol { flex-direction: column; }
+.dsh-gw-dscol:last-child, .dsh-gw-dsempty:last-child { border-right: 0; }
+.dsh-gw-dsline { display: flex; min-width: 0; }
+.dsh-gw-dsline .dsh-gw-dnum, .dsh-gw-dscol .dsh-gw-dnum { position: relative; }
+/* The side that has no line: its own numbering column, held at the width the
+   real one has, beside one hatched code cell — per line the hatching would
+   restart its stripes at every boundary. */
+.dsh-gw-dsnumcol { flex: 0 0 auto; width: var(--dsh-gw-gutter); border-right: 4px solid var(--dsw-alias-bg-base); background-color: var(--dsw-alias-bg-base); background-clip: padding-box; }
+.dsh-gw-dshatch { flex: 1 1 auto; min-width: 0; background: repeating-linear-gradient(45deg, transparent 0 3px, color-mix(in srgb, var(--dsw-alias-label-tertiary) 16%, transparent) 3px 6px), var(--dsw-alias-bg-base); }
+/* A changed line fills its two columns separately: the code one shade, the
+   numbering another, so the numbering reads as a column over the change rather
+   than as part of the code — darker than the code in a dark palette and lighter
+   in a light one. No token pairs two fills like this, so these are literal, and
+   the dark set answers the attribute the theme package sets on the body before
+   the first paint. */
+.dsh-gw-dtext-add { background: #e6f4e7; }
+.dsh-gw-dtext-del { background: #fce6e2; }
+body[data-ds-dark-theme] .dsh-gw-dtext-add { background: #1f3124; }
+body[data-ds-dark-theme] .dsh-gw-dtext-del { background: #3b1f1b; }

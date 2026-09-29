@@ -1,39 +1,38 @@
 /**
  * The DSH bundle's browser half.
  *
- * Registers one right-sidebar tab type (`kind: 'git-worktree-graph'`) plus its body and
- * chip title, and installs the transport the view reads through: one
- * same-origin route on the Web GUI's own server, registered by this bundle's host
- * half. Nothing here runs a command or touches disk.
+ * Registers two right-sidebar tab types — the worktree graph
+ * (`kind: 'git-worktree-graph'`) and the file diff it opens
+ * (`kind: 'git-worktree-graph-file-diff'`) — each with its body and chip title,
+ * and installs the transport both read through: one same-origin route on the
+ * Web GUI's own server, registered by this bundle's host half. Nothing here
+ * runs a command or touches disk.
  *
- * The view itself lives in `src/ui/worktree.ts`; this file registers it as a
- * DSH tab.
+ * The views themselves live in `src/ui/worktree.ts`; this file registers them
+ * as DSH tabs.
  */
 import * as React from 'react';
-import { Boundary, GuideIcon, WorktreeTab, WorktreeTitle, WORKTREE_TAB_TITLE, configureView } from './ui/worktree.js';
+import {
+  Boundary,
+  FileDiffTab,
+  FileDiffTitle,
+  GuideIcon,
+  WorktreeTab,
+  WorktreeTitle,
+  FILE_DIFF_KIND,
+  FILE_DIFF_TITLE,
+  CSS_MODULE_TEXT,
+  WORKTREE_TAB_TITLE,
+  configureView,
+} from './ui/worktree.js';
 import type { ViewParams, ViewTransport } from './ui/worktree.js';
-
-// Map the shared panel's theme variables to the DSH host. The panel owns no
-// DSH token names, so another platform can provide its own mapping.
-const DSH_THEME_CSS = `
-.dsh-gw {
-  --gw-label-primary: var(--dsw-alias-label-primary);
-  --gw-label-secondary: var(--dsw-alias-label-secondary);
-  --gw-bg-base: var(--dsw-alias-bg-base);
-  --gw-bg-layer-1: var(--dsw-alias-bg-layer-1);
-  --gw-bg-layer-2: var(--dsw-alias-bg-layer-2);
-  --gw-border-l1: var(--dsw-alias-border-l1);
-  --gw-border-l2: var(--dsw-alias-border-l2);
-  --gw-brand-primary: var(--dsw-alias-brand-primary);
-  --gw-state-warn: var(--dsw-alias-state-warn-primary);
-  --gw-state-success: var(--dsw-alias-state-success-primary);
-  --gw-state-error: var(--dsw-alias-state-error-primary);
-  --gw-sidebar-fill: var(--dsw-specific-sidebar-fill);
-}`;
 
 const API = '/git-worktree-graph/api';
 const KIND = 'git-worktree-graph';
 const NS = '@JinzhaoTian/git-worktree-graph';
+// The diff tab's own registration id: the type's identity in the tab system,
+// and the key its body and its chip register under.
+const DIFF_ID = `${NS}/file-diff`;
 
 /**
  * One API read over the route the host half registered.
@@ -81,6 +80,7 @@ const transport: ViewTransport = {
   diff: (params, sessionId, signal) => read('diff', params, sessionId, signal),
   commit: (params, sessionId, signal) => read('commit', params, sessionId, signal),
   uncommitted: (params, sessionId, signal) => read('uncommitted', params, sessionId, signal),
+  'file-diff': (params, sessionId, signal) => read('file-diff', params, sessionId, signal),
   operations: {
     createWorktree: (params) => write('worktree-create', params),
     rebasePreview: (params) => write('rebase-preview', params),
@@ -102,6 +102,17 @@ interface ClientContext {
 
 function apply(ctx: ClientContext): void {
   configureView(transport);
+  // The plugin's stylesheet belongs to the plugin, not to one of its tabs: it
+  // is appended once and removed when the bundle unloads, so a tab that is
+  // mounted on its own — the diff, opened while the graph's body is not — is
+  // styled exactly as the one that opened it.
+  ctx.effect(() => {
+    const sheet = document.createElement('style');
+    sheet.setAttribute('data-dsh-plugin', NS);
+    sheet.textContent = CSS_MODULE_TEXT;
+    (document.head || document.documentElement).appendChild(sheet);
+    return () => sheet.remove();
+  }, 'git-worktree-graph: stylesheet');
   ctx.effect(() => ctx.sidebarRightTabs.register({
     id: NS,
     kind: KIND,
@@ -112,22 +123,43 @@ function apply(ctx: ClientContext): void {
       id: 'open',
       order: 60,
       title: () => WORKTREE_TAB_TITLE,
-      description: () => '浏览当前工作区的 worktree、分支与提交图',
+      description: () => 'Browse worktrees, branches, and commit history for this workspace',
       icon: GuideIcon,
     }],
   }), 'git-worktree-graph: tab type');
 
+  // The diff tab: opened from a file row, one reused tab that follows whichever
+  // file was opened last, and no guide entry — the column's default page is
+  // decided by how many guide entries are registered, and this type is not one.
+  ctx.effect(() => ctx.sidebarRightTabs.register({
+    id: DIFF_ID,
+    kind: FILE_DIFF_KIND,
+    multiple: false,
+    priority: 'builtin',
+    title: () => FILE_DIFF_TITLE,
+  }), 'git-worktree-graph: diff tab type');
+
   ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
     name: 'sidebar.right.pane.tab',
     key: NS,
-  }, (props) => React.createElement(React.Fragment, null,
-    React.createElement('style', null, DSH_THEME_CSS),
-    React.createElement(Boundary, null, React.createElement(WorktreeTab, { ...props })))));
+  }, (props) => React.createElement(Boundary, null, React.createElement(WorktreeTab, { ...props }))));
 
   ctx.slots.inject('sidebar.right.pane.tab.title', () => ctx.slots.register({
     name: 'sidebar.right.pane.tab.title',
     key: NS,
   }, WorktreeTitle));
+
+  // The diff tab's own body and chip, registered under its own type id: a kind
+  // carries one body per implementation, and this one is a page, not the graph.
+  ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
+    name: 'sidebar.right.pane.tab',
+    key: DIFF_ID,
+  }, (props) => React.createElement(Boundary, null, React.createElement(FileDiffTab, { ...props }))));
+
+  ctx.slots.inject('sidebar.right.pane.tab.title', () => ctx.slots.register({
+    name: 'sidebar.right.pane.tab.title',
+    key: DIFF_ID,
+  }, FileDiffTitle));
 }
 
 export default {

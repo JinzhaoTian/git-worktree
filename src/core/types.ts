@@ -107,6 +107,14 @@ export interface ChangedFile {
   binary: boolean;
   status: string;
   untracked?: boolean;
+  /**
+   * The path a rename moved this file away from, when Git reported one.
+   *
+   * A patch asked for by the new path alone is a patch asked for a file that
+   * did not exist before, so Git answers with the whole file as an addition.
+   * Naming both paths keeps the pair together and the change as what it was.
+   */
+  from?: string | null;
 }
 
 export interface FileSummary {
@@ -145,6 +153,54 @@ export interface DiffPayload {
   path: string;
   stat: string;
   patch: string;
+}
+
+/** What a changed file's patch says happened to it. */
+export type FileDiffStatus = 'added' | 'deleted' | 'renamed' | 'modified';
+
+/** Which side of the change one line of a hunk belongs to. */
+export type FileDiffLineKind = 'context' | 'add' | 'del';
+
+/** One line of a hunk, carrying the number it holds on each side. */
+export interface FileDiffLine {
+  kind: FileDiffLineKind;
+  text: string;
+  /** The line's number in the old file, or null for a line that was added. */
+  old: number | null;
+  /** The line's number in the new file, or null for a line that was removed. */
+  new: number | null;
+}
+
+/** One `@@ … @@` block, with the raw heading Git printed for it. */
+export interface FileDiffHunk {
+  heading: string;
+  oldStart: number;
+  oldCount: number;
+  newStart: number;
+  newCount: number;
+  lines: FileDiffLine[];
+}
+
+/**
+ * One changed file's patch, as lines rather than as text.
+ *
+ * A file Git has never tracked has no patch to read, so its whole content is
+ * reported as a single added hunk. `note` carries what could not be shown —
+ * a file that is gone, or one too large to read — and never replaces the
+ * payload, so a view always has something to draw.
+ */
+export interface FileDiffPayload {
+  path: string;
+  /** The commit the patch belongs to, or null for the working tree's own change. */
+  oid: string | null;
+  status: FileDiffStatus;
+  binary: boolean;
+  add: number;
+  del: number;
+  hunks: FileDiffHunk[];
+  /** True when the patch was cut short before its end. */
+  truncated: boolean;
+  note: string | null;
 }
 
 /** Which history operation a plan describes. */
@@ -189,4 +245,4 @@ export interface WorktreeCreated {
 export const API_VERSION = 2;
 
 /** What a browser half may rely on beyond the base payload. */
-export const CAPABILITIES = ['commit-detail-v2', 'uncommitted-v1', 'operations-v1'];
+export const CAPABILITIES = ['commit-detail-v2', 'uncommitted-v1', 'operations-v1', 'file-diff-v1'];

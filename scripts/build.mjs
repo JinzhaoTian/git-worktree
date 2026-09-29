@@ -9,6 +9,7 @@
 import { build } from 'esbuild';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { writeFile } from 'node:fs/promises';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -29,7 +30,7 @@ await build({
 // renders this component, so a second copy of React would break its hooks.
 // The built-in UI primitives are also resolved there, giving this tab the
 // same PathLabel and refresh artwork as the Files tab.
-await build({
+const browser = await build({
   entryPoints: [resolve(root, 'src/client.ts')],
   outfile: resolve(root, 'lib/client.js'),
   bundle: true,
@@ -37,6 +38,8 @@ await build({
   platform: 'browser',
   target: 'es2022',
   external: ['react', '@deepseek-ai/dsh-client-ui-primitives'],
+  loader: { '.css': 'local-css' },
+  write: false,
   minify: false,
   legalComments: 'inline',
   logLevel: 'warning',
@@ -47,3 +50,13 @@ await build({
     js: '    return module.exports.default ?? module.exports;\n  },\n});',
   },
 });
+
+// The DSH Module Loader accepts one browser script. esbuild gives CSS Modules
+// their scoped class names and emits a stylesheet; embed the compiled sheet at
+// the view's style marker so it mounts with the tab inside the loader lifecycle.
+const script = browser.outputFiles.find((file) => file.path.endsWith('/client.js'));
+const sheet = browser.outputFiles.find((file) => file.path.endsWith('/client.css'));
+if (!script || !sheet) throw new Error('Browser build did not produce its script and CSS Module.');
+const marker = JSON.stringify('__DSH_GIT_WORKTREE_GRAPH_STYLESHEET__');
+if (!script.text.includes(marker)) throw new Error('Browser build lost its CSS Module marker.');
+await writeFile(resolve(root, 'lib/client.js'), script.text.replace(marker, JSON.stringify(sheet.text)));
